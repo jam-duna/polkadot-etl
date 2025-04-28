@@ -1,29 +1,27 @@
-// Copyright 2022 Colorful Notion, Inc.
-// This file is part of Polkaholic.
+// Copyright 2024 Colorful Notion, Inc.
+// This file is part of polkadot-etl.
 
-// Polkaholic is free software: you can redistribute it and/or modify
+// polkadot-etl is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Polkaholic is distributed in the hope that it will be useful,
+// polkadot-etl is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Polkaholic.  If not, see <http://www.gnu.org/licenses/>.
+// along with polkadot-etl.  If not, see <http://www.gnu.org/licenses/>.
 
 // Indexes Substrate Chains with WSS and JSON RPC using
 //  BigTable chain${chainID}
 //   row.id is the HEX of the blockNumber
 //   columns: (all cells with timestamp of the block)
 //      blockraw:raw/blockHash -- block object holding extrinsics + events
-//      trace:raw/blockHash -- array of k/v, deduped
 //      finalized:blockHash
 //  Mysql    block${chainID})
 //      blockNumber (primary key)
-//      lastTraceDT -- updated on storage
 //      blockDT   -- updated on finalized head
 //      blockHash -- updated on finalized head
 const util = require('util');
@@ -65,9 +63,6 @@ const {
 const mysql = require("mysql2");
 const Indexer = require("./indexer");
 const paraTool = require("./paraTool");
-
-const maxTraceAttempts = 10;
-const minCrawlTracesToActivateRPCBackfill = 1;
 
 module.exports = class Crawler extends Indexer {
     latestBlockNumber = 0;
@@ -167,102 +162,15 @@ module.exports = class Crawler extends Indexer {
         return (chain);
     }
 
-    async crawlTrace(chain, blockHash, blockNumber, timeoutMS = 20000) {
-        console.log(`crawlTrace** blockHash=${blockHash}. BN=${blockNumber}`)
-        try {
-            let headers = {
-                "Content-Type": "application/json"
-            };
-            const data = {
-                "id": 1,
-                "jsonrpc": "2.0",
-                "method": "state_traceBlock",
-                "params": [blockHash, "state", "", "Put"]
-            }
-            if (chain.onfinalityStatus == "Active" && chain.onfinalityID && chain.onfinalityID.length > 32 && this.APIWSEndpoint.includes("onfinality") && chain.id == "composable") {
-                chain.RPCBackfill = `https://${chain.id}.api.onfinality.io/rpc?apikey=${chain.onfinalityID}`
-                if (chain.onfinalityConfig && chain.onfinalityConfig.length > 5) {
-                    chain.RPCBackfill = chain.onfinalityConfig;
-                }
-                console.log("BACKFILL", chain.RPCBackfill);
-            }
-            if (!chain.RPCBackfill || chain.RPCBackfill.length == 0) {
-                console.log("CANNOT GET TRACE -- no backfill", chain.RPCBackfill);
-                return (false);
-            }
-            let cmd = `curl --silent -H "Content-Type: application/json" --max-time 1200 --connect-timeout 360 -d '{"id":1,"jsonrpc":"2.0","method":"state_traceBlock","params":["${blockHash}","state","","Put"]}' "${chain.RPCBackfill}"`
-            console.log(`crawlTrace[${blockNumber}]** cmd=${cmd}`)
-            const {
-                stdout,
-                stderr
-            } = await exec(cmd, {
-                maxBuffer: 1024 * 6400000
-            });
-            let traceData;
-            try {
-                traceData = JSON.parse(stdout);
-            } catch (e) {
-                console.log(`traceData error JSON.parse(stdout)`, e)
-            }
-
-            console.log(`traceData`, traceData)
-            if ((!traceData) || (!traceData.result) || (!traceData.result.blockTrace)) {
-                console.log("NO data", traceData);
-                return false;
-            }
-
-            let eventsRaw = traceData.result.blockTrace.events;
-            if (!eventsRaw || eventsRaw.length == 0) {
-                console.log("eventsRaw empty");
-                return [];
-            }
-            await this.store_stateTraceBlock_gs(chain.chainID, blockNumber, traceData.result.blockTrace);
-            let events = [];
-            eventsRaw.forEach((e) => {
-                let sv = this.canonicalize_trace_stringValues(e.data.stringValues);
-                if (sv) {
-                    events.push(sv);
-                }
-            });
-            return (events);
-        } catch (error) {
-            console.log(error);
-            this.logger.warn({
-                "op": "crawlTrace",
-                "err": error
-            })
-        }
-        return false;
-    }
 
 
-    canonicalize_trace_stringValues(x) {
-        let k = "0x" + x.key;
-        let v = "";
-        if (x.value) {
-            let value = x.value
-            if (value.includes("Some(")) {
-                v = "01" + value.replace("Some(", "").replace(")", "")
-            } else if (x.value == "None") {
-                v = "00";
-            }
-            return {
-                k,
-                v: "0x" + v
-            }
-        }
-        return null;
-    }
-
-
-    // crawl_block_trace (used by crawlBackfill) fetches a block using { blockNumber, attempted, crawlTrace } saves in BT with save_block_trace [which updates block${chainID} table]  It does NOT index the block
-    async crawl_block_trace(chain, t) {
+    // crawl_block (used by crawlBackfill) fetches a block using { blockNumber, attempted } saves in BT with save_block [which updates block${chainID} table]  It does NOT index the block
+    async crawl_block(chain, t) {
         try {
             let bn = parseInt(t.blockNumber, 10)
             let header = await this.api.rpc.chain.getBlockHash(bn);
             let blockHash = header.toHex();
 
-            console.log("crawl_block_trace", bn, header.toHex());
             // 1. get the block, ALWAYS
             let [signedBlock, events] = await this.crawlBlock(this.api, blockHash);
 
@@ -276,25 +184,12 @@ module.exports = class Crawler extends Indexer {
             block.hash = blockHash;
             block.blockTS = blockTS;
 
-            // 2. get the trace, if we are running a full node
-            let trace = false
-            if (chain.RPCBackfill && (chain.RPCBackfill.length > 0)) {
-                trace = await this.crawlTrace(chain, blockHash, block.number, 60000 * (t.attempted + 1));
-                console.log(`[${block.number}] crawl_block_trace trace`, trace.length);
-            } else {
-                console.log(`crawl_block_trace chain.RPCBackfill MISSING`, chain.RPCBackfill);
-            }
-
-            // 3. store finalized state, blockHash + blockTS in mysql + block + trace BT
-            let traceType = trace ? "state_traceBlock" : false
-            console.log(`crawl_block_trace ${bn}`, block)
-            let success = await this.save_block_trace(chain.chainID, block, blockHash, events, trace, true, traceType, null, null, null);
+            let success = await this.save_block(chain.chainID, block, blockHash, events, false, true, false, null, null, null);
             if (success) {
                 return {
                     t,
                     block,
                     events,
-                    trace,
                     blockHash,
                     blockTS
                 };
@@ -302,7 +197,7 @@ module.exports = class Crawler extends Indexer {
         } catch (err) {
             console.log(err);
             this.logger.warn({
-                "op": "crawl_block_trace",
+                "op": "crawl_block",
                 "chainID": chain.chainID,
                 "blockNumber": parseInt(t.blockNumber, 10),
                 "err": err
@@ -312,16 +207,15 @@ module.exports = class Crawler extends Indexer {
             t,
             block: false,
             events: false,
-            trace: false,
             blockHash: false
         };
     }
 
-    // save_block_trace stores block+events+trace, and is called
+    // save_block stores block+events, and is called
     //  (a) called by crawlBackfill/crawl_block (finalized = true)
     //  (b) subscribeStorage for CANDIDATE blocks (finalized = false)
     // it is NOT called by subscribeFinalizedHeads
-    async save_block_trace(chainID, block, blockHash, events, trace, finalized = false, traceType = false) {
+    async save_block(chainID, block, blockHash, events, trace = false, finalized = false) {
         let blockTS = block.blockTS;
         let bn = parseInt(block.header.number, 10);
         let parentHash = block.header.parentHash;
@@ -333,7 +227,6 @@ module.exports = class Crawler extends Indexer {
             data: {
                 blockraw: {},
                 events: {},
-                trace: {},
                 finalized: {},
                 n: {}
             }
@@ -351,18 +244,6 @@ module.exports = class Crawler extends Indexer {
             value: JSON.stringify(events),
             timestamp: blockTS * 1000000
         };
-        if (trace) {
-            cres['data']['trace'][blockHash] = {
-                value: JSON.stringify(trace),
-                timestamp: blockTS * 1000000
-            };
-        }
-        if (trace && traceType) {
-            cres['data']['n']['traceType'] = {
-                value: traceType,
-                timestamp: blockTS * 1000000
-            };
-        }
         if (finalized) {
             cres['data']['finalized'][blockHash] = {
                 value: "1",
@@ -378,11 +259,7 @@ module.exports = class Crawler extends Indexer {
             let eflds = "";
             let evals = "";
             let eupds = "";
-            if (trace && finalized) {
-                sql = `insert into block${chainID} (blockNumber, blockHash, parentHash, blockDT, crawlBlock, crawlTrace, lastTraceDT ${eflds} ) values (${bn}, '${blockHash}', '${parentHash}', FROM_UNIXTIME(${blockTS}), 0, 0, Now()  ${evals} ) on duplicate key update lastTraceDT = values(lastTraceDT), blockHash = values(blockHash), parentHash = values(parentHash), crawlBlock = values(crawlBlock), crawlTrace = values(crawlTrace), blockDT = values(blockDT) ${eupds} ;`;
-            } else if (trace) {
-                sql = `insert into block${chainID} (blockNumber, lastTraceDT) values (${bn}, Now()) on duplicate key update lastTraceDT = values(lastTraceDT)`
-            } else if (finalized) {
+            if (finalized) {
                 //check here
                 sql = `insert into block${chainID} (blockNumber, blockHash, parentHash, crawlBlock, blockDT ${eflds} ) values (${bn}, '${blockHash}', '${parentHash}', 0, FROM_UNIXTIME(${blockTS})  ${evals} ) on duplicate key update blockHash = values(blockHash), parentHash = values(parentHash), crawlBlock = values(crawlBlock), blockDT = values(blockDT) ${eupds};`;
             }
@@ -394,7 +271,7 @@ module.exports = class Crawler extends Indexer {
         } catch (err) {
             console.log(err);
             this.logger.warn({
-                "op": "save_block_trace",
+                "op": "save_block",
                 chainID,
                 bn,
                 err
@@ -403,50 +280,6 @@ module.exports = class Crawler extends Indexer {
         }
     }
 
-
-    async save_trace(chainID, t, trace, traceType = "state_traceBlock") {
-        if (!trace) return (false);
-        if (!(trace.length > 0)) return (false);
-        let bn = parseInt(t.blockNumber, 10);
-        let blockTS = parseInt(t.blockTS, 10);
-        let blockHash = t.blockHash;
-        let cres = {
-            key: paraTool.blockNumberToHex(bn),
-            data: {
-                trace: {},
-                n: {}
-            }
-        };
-
-        cres['data']['trace'][blockHash] = {
-            value: JSON.stringify(trace),
-            timestamp: blockTS * 1000000
-        };
-
-        cres['data']['n']['traceType'] = {
-            value: traceType,
-            timestamp: blockTS * 1000000
-        };
-
-        // flush out the mysql + BT updates
-        try {
-            const tableChain = this.getTableChain(chainID);
-            await tableChain.insert([cres]);
-            var sql = false;
-            sql = `insert into block${chainID} (blockNumber, crawlTrace, lastTraceDT) values (${bn}, 0, Now()) on duplicate key update crawlTrace = values(crawlTrace), lastTraceDT = values(lastTraceDT)`
-            this.batchedSQL.push(sql);
-            await this.update_batchedSQL();
-            return (true);
-        } catch (err) {
-            this.logger.warn({
-                "op": "save_trace",
-                chainID,
-                bn,
-                err
-            })
-            return (false);
-        }
-    }
 
     //audit_blockraw - check { header, extrinsics, number, blockTS, hash }
     async audit_blockraw(blockraw) {
@@ -586,41 +419,31 @@ module.exports = class Crawler extends Indexer {
 
     async audit_chain(chain, startBN, endBN) {
         let chainID = chain.chainID;
-        let sql = `select blockNumber, blockDT, lastTraceDT from block${chainID} where blockNumber >= ${startBN} and blockNumber < ${endBN}`;
+        let sql = `select blockNumber, blockDT from block${chainID} where blockNumber >= ${startBN} and blockNumber < ${endBN}`;
         let blocksDone = await this.poolREADONLY.query(sql)
 
         let blocks = {};
-        let traces = {};
         blocksDone.forEach(async (b) => {
-            if (b.lastTraceDT) traces[b.blockNumber] = 1;
             if (b.blockDT) blocks[b.blockNumber] = 1;
         });
 
         let out = [];
         let missedBlock = 0;
-        let missedTrace = 0;
         let covered = 0;
         for (let i = startBN; i < endBN; i++) {
-            if (!blocks[i] && !traces[i]) {
-                out.push(`( ${i}, '1', '1')`)
-                missedTrace++;
+            if (!blocks[i]) {
+                out.push(`( ${i}, '1')`)
                 missedBlock++;
-            } else if (!blocks[i]) {
-                out.push(`( ${i}, '1', '0')`)
-                missedBlock++;
-            } else if (!traces[i]) {
-                out.push(`( ${i}, '0', '1')`)
-                missedTrace++;
             } else {
-                out.push(`( ${i}, '0', '0')`)
+                out.push(`( ${i}, '0')`)
                 covered++;
             }
         }
         if (out.length > 0) {
-            this.batchedSQL.push(`insert into block${chainID} (blockNumber, crawlBlock, crawlTrace) values ` + out.join(",") + ` on duplicate key update crawlBlock = values(crawlBlock), crawlTrace = values(crawlTrace)`);
+            this.batchedSQL.push(`insert into block${chainID} (blockNumber, crawlBlock) values ` + out.join(",") + ` on duplicate key update crawlBlock = values(crawlBlock)`);
             await this.update_batchedSQL();
         }
-        console.log("audit_chain: chainID=", chainID, "startBN=", startBN, "endBN=", endBN, "missed blocks=", missedBlock, " trace=", missedTrace, " covered=", covered);
+        console.log("audit_chain: chainID=", chainID, "startBN=", startBN, "endBN=", endBN, "missed blocks=", missedBlock, " covered=", covered);
         let blockHashes = {}
         let parentHashes = {}
         let finalized = {}
@@ -631,7 +454,7 @@ module.exports = class Crawler extends Indexer {
         let parents = {};
         let start = paraTool.blockNumberToHex(startBN);
         let end = paraTool.blockNumberToHex(endBN);
-        let families = ["blockraw", "events", "trace", "finalized"]
+        let families = ["blockraw", "events", "finalized"]
         let res = tableChain.createReadStream({
             start,
             end,
@@ -647,15 +470,11 @@ module.exports = class Crawler extends Indexer {
                 let rowData = row.data;
                 let blockData = rowData["blockraw"];
                 let eventsData = rowData["events"];
-                let traceData = rowData["trace"];
                 let finalizedData = rowData["finalized"];
                 let cellBlock = false;
                 let cellEvents = false;
-                let cellTrace = false;
                 let crawlBlock = 1;
-                let crawlTrace = 0;
                 let block = false;
-                let trace = false;
                 let events = false;
                 let blockStats = false;
                 let blockTS = 0;
@@ -670,14 +489,7 @@ module.exports = class Crawler extends Indexer {
                             finalized[bn] = true;
                             blockHash = h;
                         }
-                        if (traceData && traceData[h]) {
-                            cellTrace = traceData[h][0];
-                        }
                     }
-                }
-
-                if (traceData && !cellTrace && traceData["raw"]) {
-                    cellTrace = traceData["raw"][0];
                 }
 
                 if (cellBlock && cellEvents) {
@@ -697,18 +509,7 @@ module.exports = class Crawler extends Indexer {
                     }
                 }
 
-                if (cellTrace) {
-                    trace = JSON.parse(cellTrace.value);
-                    crawlTrace = 0;
-                } else {
-                    if (events && events.length < 3) { // TODO: or numSignedExtrinsics = 0?
-                        crawlTrace = 0
-                    } else {
-                        crawlTrace = 1;
-                    }
-                }
-
-                let sql = `('${bn}', '${blockHash}', '${parentHash}', FROM_UNIXTIME('${blockTS}'), '${crawlBlock}', '${crawlTrace}')`
+                let sql = `('${bn}', '${blockHash}', '${parentHash}', FROM_UNIXTIME('${blockTS}'), '${crawlBlock}')`
                 auditRows.push(sql);
             } catch (err) {
                 this.logger.warn({
@@ -775,7 +576,7 @@ module.exports = class Crawler extends Indexer {
         for (i = 0; i < auditRows.length; i += 10000) {
             let j = i + 10000;
             if (j > auditRows.length) j = auditRows.length;
-            let sql = `insert into block${chainID} (blockNumber, blockHash, parentHash, blockDT, crawlBlock, crawlTrace) values ` + auditRows.slice(i, j).join(",") + ` on duplicate key update crawlBlock = values(crawlBlock), crawlTrace = values(crawlTrace), blockHash = values(blockHash), parentHash = values(parentHash), blockDT = values(blockDT)`;
+            let sql = `insert into block${chainID} (blockNumber, blockHash, parentHash, blockDT, crawlBlock) values ` + auditRows.slice(i, j).join(",") + ` on duplicate key update crawlBlock = values(crawlBlock), blockHash = values(blockHash), parentHash = values(parentHash), blockDT = values(blockDT)`;
             this.batchedSQL.push(sql)
         }
         auditRows = [];
@@ -823,7 +624,7 @@ module.exports = class Crawler extends Indexer {
 
     async indexChain(chain, lookbackBackfillDays = 60, audit = false, backfill = false, write_bq_log = true, techniqueParams = ["mod", 0, 1]) {
         this.chainID = chain.chainID;
-        // (1) audit_chain the period, which marks crawlBlock=1, crawlTrace=1 for the period
+        // (1) audit_chain the period, which marks crawlBlock=1 for the period
         if (audit) {
             console.log("auditChain");
             await this.auditChain(chain);
@@ -846,7 +647,9 @@ module.exports = class Crawler extends Indexer {
                 w = ` and round(indexTS/3600) % ${nmax} = ${n}`;
             }
         }
-        var sql = `select chainID, indexTS from indexlog where indexed = 0 and readyForIndexing = 1 and chainID = '${chain.chainID}' and indexTS < UNIX_TIMESTAMP(Now()) - 3600 and ( lastAttemptStartDT is null or lastAttemptStartDT < date_sub(Now(), interval POW(5, attempted) MINUTE) ) ${w} order by attempted, indexTS`;
+        let w2 = (Math.random() < .1) ? " logDT, rand()" : "rand()";
+        var sql = `select chainID, indexTS from indexlog where indexed = 0 and readyForIndexing = 1 and chainID = '${chain.chainID}' and indexTS < UNIX_TIMESTAMP(Now()) - 3600
+ and ( lastAttemptStartDT is null or lastAttemptStartDT < date_sub(Now(), interval POW(5, attempted) MINUTE) ) and duneStatus not in ('AuditRequired','Audited') ${w} order by ${w2} limit 20`;
         var indexlogs = await this.pool.query(sql);
         if (indexlogs.length == 0) {
             console.log(`indexChain ${chain.chainID}: no work to do`, sql)
@@ -903,7 +706,26 @@ module.exports = class Crawler extends Indexer {
         }
     }
 
-    async maintainIndexer() {
+    async get_fixes(chainID = 0) {
+        let sql = `select blockNumber from block${chainID} where crawlBlock = 1 order by blockNumber desc limit 10000`
+        let recs = await this.poolREADONLY.query(sql)
+        let bns = [];
+        for (const r of recs) {
+            bns.push(r.blockNumber);
+        }
+        return bns;
+    }
+
+    async maintainIndexer(chainID) {
+        const bigquery = this.get_big_query();
+        let query = `SELECT  SUBSTR(CAST(TIMESTAMP_TRUNC(block_time, DAY) AS STRING), 1, 10) as logDT, count(*) cnt FROM  \`substrate-etl.polkadot_analytics.fixes${chainID}\` group by logDT`;
+        let recs = await this.execute_bqJob(query);
+        for (const r of recs) {
+            let sql = `update blocklog set loaded = 0 where logDT = "${r.logDT}" and chainID = ${chainID};`;
+            console.log(sql);
+        }
+
+        process.exit(0);
         let sql = `select chainID, CONVERT(auditFailures using utf8) auditFailures from blocklogstats where audited = 'Failure' and monthDT = LAST_DAY(Now()) limit 100`;
         console.log(sql);
         var failures = await this.poolREADONLY.query(sql);
@@ -932,9 +754,10 @@ module.exports = class Crawler extends Indexer {
     async indexChainRandom(lookbackBackfillDays = 60, audit = true, backfill = true, write_bq_log = true, update_chain_assets = true) {
         // pick a chainID that the node is also crawling
         let hostname = this.hostname;
+        var w = Math.random() < .5 ? "count(*) > 10 and " : ""
         var sql = `select chainID, min(from_unixtime(indexTS)) as indexDTLast, count(*) from indexlog where indexed=0 and readyForIndexing = 1
-and ( lastAttemptStartDT is null or lastAttemptStartDT < date_sub(Now(), interval POW(5, attempted) MINUTE) )
-group by chainID having count(*) < 500 order by rand() desc`;
+and ( lastAttemptStartDT is null or lastAttemptStartDT < date_sub(Now(), interval POW(5, attempted) MINUTE) ) and attempted < 15
+group by chainID having ${w} count(*) < 100 order by rand() desc`;
         console.log(sql);
         var chains = await this.poolREADONLY.query(sql);
 
@@ -970,24 +793,7 @@ group by chainID having count(*) < 500 order by rand() desc`;
         return 14000;
     }
 
-    async crawlTracesRandom(lookbackBackfill = 60) {
-        var sql = `select chainID, traceTSLast, UNIX_TIMESTAMP( NOW() ) - traceTSLast as ts from chain where crawling = 1 and UNIX_TIMESTAMP( NOW() ) - traceTSLast < 864000 and chainID != 22007 and WSEndpointSelfHosted = 1 order by traceTSLast limit 1`;
-        var chains = await this.poolREADONLY.query(sql);
-
-        if (chains.length < 1) {
-            console.log("crawlTracesRandom: No chains to index", sql);
-            return (false);
-        }
-        let chainID = chains[0].chainID;
-        this.batchedSQL.push(`update chain set traceTSLast = UNIX_TIMESTAMP( NOW() ) where chainID = '${chainID}'`);
-        await this.update_batchedSQL();
-
-        await this.crawlTraces(chainID);
-        await this.update_batchedSQL();
-        return (true);
-    }
-
-    // for any missing blocks/traces, this refetches the dataset
+    // for any missing blocks, this refetches the dataset
     async crawlBackfill(chain, techniqueParams = ["mod", 0, 1], lookbackBlocks = null, wsBackfill = false) {
         let chainID = chain.chainID;
         let sql = false;
@@ -1000,12 +806,12 @@ group by chainID having count(*) < 500 order by rand() desc`;
             let nmax = techniqueParams[2];
             let w = (nmax > 1) ? `and blockNumber % ${nmax} = ${n}` : "";
             let w2 = ` and blockNumber > ${chain.blocksCovered} - ${lookbackBlocks}`
-            sql = `select blockNumber, crawlBlock, 0 as crawlTrace, attempted from block${chainID} where ( crawlBlock = 1 ) ${w} ${w2} and blockNumber <= ${chain.blocksFinalized} and ( attemptedDT is null or attemptedDT < Date_sub(Now(), interval POW(3, attempted) MINUTE) ) order by blockNumber desc limit 50000`
+            sql = `select blockNumber, crawlBlock, attempted from block${chainID} where ( crawlBlock = 1 ) ${w} ${w2} and blockNumber <= ${chain.blocksFinalized} and ( attemptedDT is null or attemptedDT < Date_sub(Now(), interval POW(3, attempted) MINUTE) ) and attempted < 15 order by blockNumber desc limit 50000`
             console.log("lookback", sql);
         } else if (techniqueParams[0] == "range") {
             let startBN = techniqueParams[1];
             let endBN = techniqueParams[2];
-            sql = `select blockNumber, crawlBlock, 0 as crawlTrace, attempted from block${chainID} where ( crawlBlock = 1 ) and blockNumber >= ${startBN} and blockNumber <= ${endBN} and ( attemptedDT is null  or attemptedDT < date_sub(Now(), interval POW(3, attempted) MINUTE) ) order by blockNumber desc limit 50000`
+            sql = `select blockNumber, crawlBlock, attempted from block${chainID} where ( crawlBlock = 1 ) and blockNumber >= ${startBN} and blockNumber <= ${endBN} and ( attemptedDT is null  or attemptedDT < date_sub(Now(), interval POW(3, attempted) MINUTE) ) and attempted < 15 order by blockNumber desc limit 50000`
             console.log("lookback", sql);
         }
         let tasks = await this.poolREADONLY.query(sql);
@@ -1022,26 +828,21 @@ group by chainID having count(*) < 500 order by rand() desc`;
             let pieces = tasks.slice(i, j);
             console.log("crawlBackfill", "chainID", chainID, i, "/", tasks.length);
             let res = pieces.map((t) => {
-                return this.crawl_block_trace(chain, t);
+                return this.crawl_block(chain, t);
             })
             let res2 = await Promise.all(res);
-            res2.forEach(async (t_block_trace) => {
+            res2.forEach(async (t_block) => {
                 let {
                     t,
                     block,
-                    events,
-                    trace
-                } = t_block_trace;
+                    events
+                } = t_block;
                 if (t.attempted > 100) t.attempted = 100;
 
                 let flds = [];
                 if (block && events && (t.crawlBlock > 0)) {
                     t.crawlBlock = 0;
                     flds.push(`crawlBlock = '${t.crawlBlock}'`);
-                    if (trace && (t.crawlTrace > 0)) {
-                        t.crawlTrace = 0;
-                        flds.push(`crawlTrace = '${t.crawlTrace}'`);
-                    }
                 } else {
                     flds.push(`attempted = ${t.attempted + 1}`);
                     flds.push(`attemptedDT = Now()`);
@@ -1057,7 +858,7 @@ group by chainID having count(*) < 500 order by rand() desc`;
     }
 
     async getNumRecentCrawlBlocks(chain, lookbackBlocks = 14000) {
-        var sql = `select count(*) as numRecentCrawlBlocks from block${chain.chainID} b, chain c where crawlBlock = 1 and blockNumber >= c.blocksFinalized - ${lookbackBlocks} and c.chainID = ${chain.chainID} and attemptedDT < date_sub(Now(), INTERVAL POW(5, attempted) MINUTE) order by attempted limit 1000`;
+        var sql = `select count(*) as numRecentCrawlBlocks from block${chain.chainID} b, chain c where crawlBlock = 1 and blockNumber >= c.blocksFinalized - ${lookbackBlocks} and c.chainID = ${chain.chainID} and attemptedDT < date_sub(Now(), INTERVAL POW(5, attempted) MINUTE) and attempted < 15 order by attempted limit 1000`;
         let result = await this.poolREADONLY.query(sql);
 
         if (result.length > 0) {
@@ -1066,79 +867,6 @@ group by chainID having count(*) < 500 order by rand() desc`;
         return (-1);
     }
 
-    // for any missing traces, this refetches the dataset
-    async crawlTraces(chainID, techniqueParams = ["mod", 0, 1], lookbackBlocks = null, skipTrace = true) {
-        let chain = await this.setupChainAndAPI(chainID, true, true);
-        await this.check_chain_endpoint_correctness(chain);
-
-        let done = false;
-        let syncState = await this.api.rpc.system.syncState();
-        do {
-            let highestBlock = parseInt(syncState.highestBlock.toString(), 10);
-            let currentBlock = parseInt(syncState.currentBlock.toString(), 10);
-            let startingBlock = parseInt(syncState.startingBlock.toString(), 10);
-            //console.log("crawlTraces highestBlock", currentBlock, highestBlock, syncState, startingBlock);
-            let lookbackBlocks = await this.getChainLookbackBlocks(chainID);
-            let startBN = chain.blocksFinalized - lookbackBlocks;
-            let w = ((techniqueParams.length > 2) && (techniqueParams[2] > 0)) ? `and blockNumber % ${techniqueParams[2]} = ${techniqueParams[1]}` : ""
-            let w2 = (chainID == 0 || chainID == 2) ? " or crawlTrace = 1 " : ""; // only need traces from relay chains in practice
-            let sql = `select blockNumber, UNIX_TIMESTAMP(blockDT) as blockTS, crawlBlock, blockHash, attempted from block${chainID} where ( crawlBlock = 1 ${w2} ) and blockNumber > ${startBN} and ( attemptedDT is Null or attemptedDT < date_sub(Now(), INTERVAL POW(5, attempted) MINUTE) ) ${w} limit 5000`
-            if (techniqueParams[0] == "range") {
-                let startBN = techniqueParams[1];
-                let endBN = techniqueParams[2];
-                sql = `select blockNumber, UNIX_TIMESTAMP(blockDT) as blockTS, crawlBlock, blockHash, attempted from block${chainID} where ( crawlBlock = 1 ${w2} ) and blockNumber >= ${startBN} and blockNumber <= ${endBN} order by rand() limit 1000`
-            }
-            console.log(sql);
-            let tasks = await this.poolREADONLY.query(sql);
-            let jmp = 1;
-            for (var i = 0; i < tasks.length; i += jmp) {
-                let j = i + jmp;
-                if (j > tasks.length) j = tasks.length;
-                let pieces = tasks.slice(i, j);
-                let res = pieces.map((t1) => {
-                    let t2 = {
-                        chainID: chainID,
-                        blockNumber: t1.blockNumber,
-                        blockHash: t1.blockHash, // could be null
-                        blockTS: t1.blockTS, // could be null
-                        attempted: t1.attempted // should be
-                    };
-                    return this.crawl_block_trace(chain, t2)
-                });
-                let res2 = await Promise.all(res);
-                res2.forEach(async (t_trace) => {
-                    let {
-                        t,
-                        block,
-                        events,
-                        trace,
-                        blockHash
-                    } = t_trace;
-                    let flds = [];
-                    if (blockHash) {
-                        flds.push('crawlBlock = 0');
-                        if (trace) {
-                            flds.push('crawlTrace = 0');
-                        }
-                    } else {
-                        flds.push('attempted = attempted + 1');
-                        flds.push('attemptedDT = Now()');
-                    }
-                    let sql = `update block${chainID} set ${flds.join(",")} where blockNumber = ${t.blockNumber}`;
-                    console.log(sql)
-                    this.batchedSQL.push(sql)
-                    //await this.mark_indexlog_dirty(chainID, block.blockTS)
-                    return
-                });
-                this.batchedSQL.push(`update chain set traceTSLast = UNIX_TIMESTAMP(Now()) where chainID = ${chainID}`)
-                await this.update_batchedSQL();
-            }
-            let numRecentCrawlBlocks = await this.getNumRecentCrawlBlocks(chain, lookbackBlocks);
-            console.log("crawlTraces numRecentCrawlBlocks=", numRecentCrawlBlocks)
-            if (numRecentCrawlBlocks < 3) done = true;
-        } while (!done);
-
-    }
 
     async mark_indexlog_dirty(chainID, ts) {
 
@@ -1158,28 +886,6 @@ group by chainID having count(*) < 500 order by rand() desc`;
             "replace": ["indexed"]
         }, true);
         this.lastmarkedTS = indexTS;
-    }
-
-
-    async dedupChanges(changes) {
-        let dedupEvents = {};
-        for (const r of changes) {
-            let k = r[0].toHex();
-            let v = r[1].toHex();
-            if (v.length == 2) {
-                v = null;
-            }
-            dedupEvents[k] = {
-                k,
-                v
-            };
-        }
-
-        let trace = [];
-        for (const k of Object.keys(dedupEvents)) {
-            trace.push(dedupEvents[k]);
-        }
-        return (trace);
     }
 
     async markFinalizedReadyForIndexing(chain, blockTS) {
@@ -1210,12 +916,19 @@ group by chainID having count(*) < 500 order by rand() desc`;
     }
 
     async crawlBlock(api, blockHash) {
-        const signedBlock = await api.rpc.chain.getBlock(blockHash);
+        let signedBlock;
         let eventsRaw = [];
         try {
+            signedBlock = await api.rpc.chain.getBlock(blockHash);
             eventsRaw = await api.query.system.events.at(blockHash);
         } catch (err) {
             console.log(err);
+            this.logger.error({
+                "op": "crawlBlock: signedBlock/eventsRaw",
+                "chainID": this.chainID,
+                "blockHash": blockHash,
+                err
+            })
         }
         let events = eventsRaw.map((e) => {
             let eh = e.event.toHuman();
@@ -1379,7 +1092,7 @@ group by chainID having count(*) < 500 order by rand() desc`;
         const {
             Storage
         } = require('@google-cloud/storage');
-        const storage = new Storage();
+        const storage = this.get_google_storage();
         let bucketName = "crypto_substrate";
         const bucket = storage.bucket(bucketName);
         let jmp = 50;
@@ -1429,18 +1142,13 @@ group by chainID having count(*) < 500 order by rand() desc`;
                             chainID,
                             blockNumber
                         };
-                        let x = await this.crawl_block_trace(chain, t2)
+                        let x = await this.crawl_block(chain, t2)
                         finalizedHash = x.blockHash
                         await this.index_block(chain, blockNumber, x.blockHash);
                         out.push(`(${blockNumber}, 1)`)
                         r = null;
                     }
-                    if (r["trace"] == false) {
-                        console.log(`trace missing BN=${blockNumber}, finalizedHash=${finalizedHash}`)
-                        await this.crawlTrace(chain, finalizedHash, blockNumber);
-                    } else {
-                        console.log(`trace found BN=${blockNumber}`)
-                    }
+
                 } catch (err) {
                     console.log(err, "build_block");
                 }
@@ -1449,13 +1157,6 @@ group by chainID having count(*) < 500 order by rand() desc`;
                     result["blockraw"] = r["block"]; //raw encoded extrinsic + header
                     result["events"] = r["events"]; // decoded events
                     result["feed"] = r["feed"]; // decoded extrinsics
-                    //result["autotrace"] = r["autotrace"] // this is the decorated version
-                    if (r["trace"] == undefined || r["trace"] == false) {
-                        //need to issue crawlTrace here..
-                        console.log(`TODO: crawlTrace+decorate relayChain=${relayChain}. paraID=${paraID}, blockNumber=${blockNumber}`);
-                        //let autoTraces = await this.processTraceAsAuto(blockTS, blockNumber, blockHash, this.chainID, trace, traceType, this.api, isFinalized);
-                        //await this.processTraceFromAuto(blockTS, blockNumber, blockHash, this.chainID, autoTraces, traceType, this.api, isFinalized, true); // use result from rawtrace to decorate
-                    }
                     if (result["blockraw"] && result["events"] && result["feed"]) {
                         const compressedData = JSON.stringify(result);
                         const fileName = this.gs_substrate_file_name(relayChain, paraID, blockNumber);
@@ -1585,11 +1286,12 @@ group by chainID having count(*) < 500 order by rand() desc`;
             "keys": ["chainID"],
             "vals": ["id", "relaychain", "paraID", "website", "WSEndpoint", "WSEndpoint2", "WSEndpoint3"],
             "data": newParas,
-            "replace": ["id", "paraID", "website"],
+            "replace": ["paraID", "website"],
             "replaceIfNull": ["relaychain", "WSEndpoint", "WSEndpoint2", "WSEndpoint3"],
         });
         this.readyToCrawlParachains = false;
     }
+
 
     async processFinalizedHead(chain, chainID, bn, finalizedHash, parentHash, isTip = false) {
         const tableChain = this.getTableChain(chainID);
@@ -1598,9 +1300,8 @@ group by chainID having count(*) < 500 order by rand() desc`;
         let blockStats = false;
         let blockTS = 0;
         let crawlBlock = 1;
-        let crawlTrace = 1;
         if (bn > this.latestBlockNumber) this.latestBlockNumber = bn;
-        // read the row and DELETE all the blockraw:XXX and trace:XXX rows that do NOT match the finalized hash
+        // read the row and DELETE all the blockraw:XXX cells that do NOT match the finalized hash
         const filter = {
             column: {
                 cellLimit: 30
@@ -1619,7 +1320,7 @@ group by chainID having count(*) < 500 order by rand() desc`;
             }
         }
         if (row == null) {
-            await this.crawl_block_trace(chain, {
+            await this.crawl_block(chain, {
                 blockNumber: bn
             });
             [row] = await tableChain.row(paraTool.blockNumberToHex(bn)).get({
@@ -1635,11 +1336,9 @@ group by chainID having count(*) < 500 order by rand() desc`;
             let cols = [];
             let rowData = row.data;
             const blockData = rowData["blockraw"];
-            const traceData = rowData["trace"];
             const eventsData = rowData["events"];
             let block = false;
             let events = false;
-            let trace = false;
             if (blockData && eventsData) {
                 for (const blockHash of Object.keys(blockData)) {
                     if (blockHash != finalizedHash) {
@@ -1660,35 +1359,6 @@ group by chainID having count(*) < 500 order by rand() desc`;
                 }
             }
 
-            if (traceData) {
-                for (const blockHash of Object.keys(traceData)) {
-                    if (blockHash != finalizedHash) {
-                        cols.push("trace:" + blockHash);
-                    } else {
-                        crawlTrace = 0;
-                        let cellTrace = traceData[blockHash][0];
-                        if (cellTrace) {
-                            trace = JSON.parse(cellTrace.value);
-                        }
-                    }
-                }
-            }
-            // if we didn't get a trace, or if we are using onfinality endpoint
-            if ((chain.onfinalityStatus == "Active" && chain.onfinalityID && (chain.onfinalityID.length > 0) || (chain.WSEndpointSelfHosted)) &&
-                ((trace == false || trace.length == 0 || this.APIWSEndpoint.includes("onfinality")))) {
-                console.log(`processFinalizedHead finalizedHash=${finalizedHash}, BN=${bn}, blockTS=${blockTS}`)
-                let trace2 = await this.crawlTrace(chain, finalizedHash, bn);
-                if (trace2.length > 0 && blockTS > 0) {
-                    trace = trace2;
-                    let t = {
-                        blockNumber: bn,
-                        blockHash: finalizedHash,
-                        blockTS: blockTS
-                    }
-                    await this.save_trace(chainID, t, trace)
-                }
-            }
-
             if (cols.length > 0) {
                 await row.deleteCells(cols);
             }
@@ -1696,7 +1366,6 @@ group by chainID having count(*) < 500 order by rand() desc`;
                 let rRow = {
                     block,
                     events,
-                    trace,
                     blockHash: finalizedHash,
                 }
                 //todo: missing rRow.blockHash
@@ -1705,7 +1374,7 @@ group by chainID having count(*) < 500 order by rand() desc`;
                 let refreshAPI = false
                 let isTip = true
                 let finalized = true
-                //index_chain_block_row(r, signedBlock = false, write_bq_log = false, refreshAPI = false, isTip = false, isFinalized = true, traceParseTS = 1670544000)
+                //index_chain_block_row(r, signedBlock = false, write_bq_log = false, refreshAPI = false, isTip = false, isFinalized = true)
                 let r = await this.index_chain_block_row(rRow, isSignedBlock, false, refreshAPI, isTip, finalized);
                 blockStats = r.blockStats;
                 // IMMEDIATELY flush all address feed + hashes (txs + blockhashes)
@@ -1746,7 +1415,7 @@ group by chainID having count(*) < 500 order by rand() desc`;
                 let eflds = "";
                 let evals = "";
                 let eupds = "";
-                let sql = `insert into block${chainID} (blockNumber, blockHash, parentHash, numExtrinsics, numSignedExtrinsics, numTransfers, numEvents, valueTransfersUSD, fees, blockDT, crawlBlock, crawlTrace ${eflds}) values ('${bn}', '${finalizedHash}', '${parentHash}', '${numExtrinsics}', '${numSignedExtrinsics}', '${numTransfers}', '${numEvents}', '${valueTransfersUSD}', '${fees}', FROM_UNIXTIME('${blockTS}'), '${crawlBlock}', '${crawlTrace}' ${evals}) on duplicate key update blockHash=values(blockHash), parentHash = values(parentHash), blockDT=values(blockDT), numExtrinsics = values(numExtrinsics), numSignedExtrinsics = values(numSignedExtrinsics), numTransfers = values(numTransfers), numEvents = values(numEvents), valueTransfersUSD = values(valueTransfersUSD), fees = values(fees), crawlBlock = values(crawlBlock), crawlTrace = values(crawlTrace) ${eupds}`;
+                let sql = `insert into block${chainID} (blockNumber, blockHash, parentHash, numExtrinsics, numSignedExtrinsics, numTransfers, numEvents, valueTransfersUSD, fees, blockDT, crawlBlock ${eflds}) values ('${bn}', '${finalizedHash}', '${parentHash}', '${numExtrinsics}', '${numSignedExtrinsics}', '${numTransfers}', '${numEvents}', '${valueTransfersUSD}', '${fees}', FROM_UNIXTIME('${blockTS}'), '${crawlBlock}' ${evals}) on duplicate key update blockHash=values(blockHash), parentHash = values(parentHash), blockDT=values(blockDT), numExtrinsics = values(numExtrinsics), numSignedExtrinsics = values(numSignedExtrinsics), numTransfers = values(numTransfers), numEvents = values(numEvents), valueTransfersUSD = values(valueTransfersUSD), fees = values(fees), crawlBlock = values(crawlBlock) ${eupds}`;
                 this.batchedSQL.push(sql);
                 // mark that the PREVIOUS hour is ready for indexing, since this block is FINALIZED, so that continuously running "indexChain" job can index the newly finalized hour
                 await this.markFinalizedReadyForIndexing(chain, blockTS);
@@ -1769,9 +1438,8 @@ group by chainID having count(*) < 500 order by rand() desc`;
                         "data": out,
                         "replace": valstmp
                     });
+                    await this.update_batchedSQL();
                 }
-                let sql4 = `delete from blockunfinalized where chainID = '${chainID}' and blockNumber < '${bn}'`
-                this.batchedSQL.push(sql4);
 
                 var runtimeVersion = await this.api.rpc.state.getRuntimeVersion(finalizedHash)
                 let specVersion = runtimeVersion.toJSON().specVersion;
@@ -1847,7 +1515,7 @@ group by chainID having count(*) < 500 order by rand() desc`;
     async process_indexer_crawlBlock(chain, crawlBlock) {
         try {
             let blockNumber = crawlBlock.blockNumber;
-            await this.crawl_block_trace(chain, crawlBlock)
+            await this.crawl_block(chain, crawlBlock)
             let blockHash = await this.getBlockHashFinalized(chain.chainID, blockNumber);
             this.logger.error({
                 "op": "process_indexer_crawlBlock READY",
@@ -1878,7 +1546,6 @@ group by chainID having count(*) < 500 order by rand() desc`;
         return (false);
     }
 
-    //TODO: crawltrace
     async crawlBlocks(chainID) {
         if (chainID == paraTool.chainIDPolkadot || chainID == paraTool.chainIDKusama) {
             this.readyToCrawlParachains = true;
@@ -1985,34 +1652,10 @@ group by chainID having count(*) < 500 order by rand() desc`;
                             "chainID": chainID
                         }
 
-                        // get trace from block
-                        let trace = [];
-                        let traceType = "subscribeStorage";
-                        let traceBlock = await this.api.rpc.state.traceBlock(blockHash, "state", "", "Put");
-                        let traceBlockJSON = traceBlock.toJSON();
-                        if (traceBlockJSON) {
-                            //TODO: check traceBlockJSON
-                            await this.store_stateTraceBlock_gs(chain.chainID, blockNumber, traceBlockJSON);
-                            if (traceBlockJSON.blockTrace && traceBlockJSON.blockTrace.events) {
-                                let events = []
-                                let changes = traceBlockJSON.blockTrace.events.forEach((e) => {
-                                    let x = this.canonicalize_trace_stringValues(e.data.stringValues);
-                                    if (x) {
-                                        events.push(x);
-                                    }
-                                })
-                                if (events.length > 0) {
-                                    traceType = "state_traceBlock"
-                                    trace = events;
-                                }
-                            }
-                        } else {
-                            if (this.debugLevel > paraTool.debugVerbose) console.log(`BN#${block.number} ${blockHash} no traceBlock!`)
-                        }
 
                         if (blockNumber > this.latestBlockNumber) this.latestBlockNumber = blockNumber;
-                        // write { blockraw:blockHash => block, trace:blockHash => trace, events:blockHash => events } to bigtable
-                        let success = await this.save_block_trace(chainID, block, blockHash, events, trace, false, traceType);
+                        // write { blockraw:blockHash => block, events:blockHash => events } to bigtable
+                        let success = await this.save_block(chainID, block, blockHash, events, false, false);
                         if (success) {
                             // write to mysql
                             let blockTS = block.blockTS;
@@ -2023,13 +1666,7 @@ group by chainID having count(*) < 500 order by rand() desc`;
 
                                 let isFinalized = false
                                 let isTip = true
-                                let isTracesPresent = success // true here
-
-                                let autoTraces = await this.processTraceAsAuto(blockTS, blockNumber, blockHash, this.chainID, trace, traceType, this.api, isFinalized);
-                                await this.processTraceFromAuto(blockTS, blockNumber, blockHash, this.chainID, autoTraces, traceType, this.api, isFinalized, true); // use result from rawtrace to decorate
-
-                                //processBlockEvents(chainID, block, eventsRaw, unused0, unused1, unused2, autoTraces, finalized = false, unused = false, isTip = false, tracesPresent = false)
-                                let [blockStats, xcmMeta] = await this.processBlockEvents(chainID, signedExtrinsicBlock, events, null, null, null, autoTraces, isFinalized, false, isTip, isTracesPresent);
+                                let [blockStats, xcmMeta] = await this.processBlockEvents(chainID, signedExtrinsicBlock, events, null, null, this.api, false, isFinalized, false, isTip, false);
 
                                 await this.immediateFlushBlockAndAddressExtrinsics(true) //this is tip
                                 if (blockNumber > this.blocksCovered) {
@@ -2044,10 +1681,10 @@ group by chainID having count(*) < 500 order by rand() desc`;
                                 let numEvents = blockStats && blockStats.numEvents ? blockStats.numEvents : 0
                                 let valueTransfersUSD = blockStats && blockStats.valueTransfersUSD ? blockStats.valueTransfersUSD : 0
                                 let fees = blockStats && blockStats.fees ? blockStats.fees : 0
-                                let vals = ["numExtrinsics", "numSignedExtrinsics", "numTransfers", "numEvents", "valueTransfersUSD", "fees", "lastTraceDT"]
+                                let vals = ["numExtrinsics", "numSignedExtrinsics", "numTransfers", "numEvents", "valueTransfersUSD", "fees"]
                                 let evals = "";
 
-                                let out = `('${blockNumber}', '${numExtrinsics}', '${numSignedExtrinsics}', '${numTransfers}', '${numEvents}', '${valueTransfersUSD}', '${fees}', from_unixtime(${blockTS}) ${evals} )`;
+                                let out = `('${blockNumber}', '${numExtrinsics}', '${numSignedExtrinsics}', '${numTransfers}', '${numEvents}', '${valueTransfersUSD}', '${fees}' ${evals} )`;
                                 await this.upsertSQL({
                                     "table": `block${chainID}`,
                                     "keys": ["blockNumber"],
@@ -2055,20 +1692,7 @@ group by chainID having count(*) < 500 order by rand() desc`;
                                     "data": [out],
                                     "replace": vals
                                 });
-                                //store unfinalized blockHashes in a single table shared across chains
-                                let outunf = `('${chainID}', '${blockNumber}', '${blockHash}', '${numExtrinsics}', '${numSignedExtrinsics}', '${numTransfers}', '${numEvents}', '${valueTransfersUSD}', '${fees}', from_unixtime(${blockTS}) ${evals} )`;
-                                let vals2 = [...vals]; // same as other insert, but with
-                                vals2.unshift("blockHash");
-                                await this.upsertSQL({
-                                    "table": "blockunfinalized",
-                                    "keys": ["chainID", "blockNumber"],
-                                    "vals": vals2,
-                                    "data": [outunf],
-                                    "replace": vals
-                                })
-
-                                //console.log(`****** subscribeStorage ${chain.chainName} bn=${blockNumber} ${blockHash}: cbt read chain${chainID} prefix=` + paraTool.blockNumberToHex(parseInt(blockNumber, 10)));
-                                await this.update_batchedSQL();
+                                //sourabh
                             } else {
                                 if (this.debugLevel > paraTool.debugErrorOnly) console.log(`BN#${block.number} ${blockHash} blockTS missing!!!`)
                             }
@@ -2101,7 +1725,6 @@ group by chainID having count(*) < 500 order by rand() desc`;
                         let blockHash = header.hash.toString();
                         let [signedBlock, events] = await this.crawlBlock(this.api, blockHash);
                         let blockTS = signedBlock.blockTS;
-                        let traceType = "subscribeStorage";
 
                         // to avoid 'hash' error, we create the a new block copy without decoration and add hash in
                         let block = JSON.parse(JSON.stringify(signedBlock));
@@ -2114,9 +1737,8 @@ group by chainID having count(*) < 500 order by rand() desc`;
                             "chainID": chainID
                         }
                         if (blockNumber > this.latestBlockNumber) this.latestBlockNumber = blockNumber;
-                        let trace = [];
-                        // write { blockraw:blockHash => block, trace:blockHash => trace, events:blockHash => events } to bigtable
-                        let success = await this.save_block_trace(chainID, block, blockHash, events, trace, false, traceType);
+                        // write { blockraw:blockHash => block, events:blockHash => events } to bigtable
+                        let success = await this.save_block(chainID, block, blockHash, events, [], false);
                         if (success) {
                             // write to mysql
                             let blockTS = block.blockTS;
@@ -2126,13 +1748,8 @@ group by chainID having count(*) < 500 order by rand() desc`;
                                 signedExtrinsicBlock.extrinsics = signedBlock.extrinsics //add signed extrinsics
                                 let isFinalized = false
                                 let isTip = true
-                                let isTracesPresent = false
-
-                                let autoTraces = await this.processTraceAsAuto(blockTS, blockNumber, blockHash, this.chainID, trace, traceType, this.api, isFinalized);
-
-                                await this.processTraceFromAuto(blockTS, blockNumber, blockHash, this.chainID, autoTraces, traceType, this.api, isFinalized, true); // use result from rawtrace to decorate
-
-                                let [blockStats, xcmMeta] = await this.processBlockEvents(chainID, signedExtrinsicBlock, events, null, null, null, [], isFinalized, false, isTip, isTracesPresent);
+                                // this.processBlockEvents(this.chainID, r.block, r.events, null, null, null, api, isFinalized, false, isTip);
+                                let [blockStats, xcmMeta] = await this.processBlockEvents(chainID, signedExtrinsicBlock, events, null, null, null, this.api, isFinalized, false, isTip);
 
                                 await this.immediateFlushBlockAndAddressExtrinsics(true) //this is tip
                                 if (blockNumber > this.blocksCovered) {
@@ -2147,9 +1764,9 @@ group by chainID having count(*) < 500 order by rand() desc`;
                                 let numEvents = blockStats && blockStats.numEvents ? blockStats.numEvents : 0
                                 let valueTransfersUSD = blockStats && blockStats.valueTransfersUSD ? blockStats.valueTransfersUSD : 0
                                 let fees = blockStats && blockStats.fees ? blockStats.fees : 0
-                                let vals = ["numExtrinsics", "numSignedExtrinsics", "numTransfers", "numEvents", "valueTransfersUSD", "fees", "lastTraceDT"]
+                                let vals = ["numExtrinsics", "numSignedExtrinsics", "numTransfers", "numEvents", "valueTransfersUSD", "fees"]
                                 let evals = "";
-                                let out = `('${blockNumber}', '${numExtrinsics}', '${numSignedExtrinsics}', '${numTransfers}', '${numEvents}', '${valueTransfersUSD}', '${fees}', from_unixtime(${blockTS}) ${evals} )`;
+                                let out = `('${blockNumber}', '${numExtrinsics}', '${numSignedExtrinsics}', '${numTransfers}', '${numEvents}', '${valueTransfersUSD}', '${fees}' ${evals} )`;
                                 await this.upsertSQL({
                                     "table": `block${chainID}`,
                                     "keys": ["blockNumber"],
@@ -2157,19 +1774,6 @@ group by chainID having count(*) < 500 order by rand() desc`;
                                     "data": [out],
                                     "replace": vals
                                 });
-                                //store unfinalized blockHashes in a single table shared across chains
-                                let outunf = `('${chainID}', '${blockNumber}', '${blockHash}', '${numExtrinsics}', '${numSignedExtrinsics}', '${numTransfers}', '${numEvents}', '${valueTransfersUSD}', '${fees}', from_unixtime(${blockTS}) ${evals} )`;
-                                let vals2 = [...vals]; // same as other insert, but with
-                                console.log("***** subscribeNewHeads", blockHash, blockNumber);
-                                vals2.unshift("blockHash");
-                                await this.upsertSQL({
-                                    "table": "blockunfinalized",
-                                    "keys": ["chainID", "blockNumber"],
-                                    "vals": vals2,
-                                    "data": [outunf],
-                                    "replace": vals
-                                })
-
                                 await this.update_batchedSQL();
                             } else {
                                 if (this.debugLevel > paraTool.debugErrorOnly) console.log(`BN#${block.number} ${blockHash} blockTS missing!!!`)

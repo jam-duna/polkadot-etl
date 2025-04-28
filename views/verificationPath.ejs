@@ -1,6 +1,0 @@
-<% if ( vp && vp.path && vp.verificationURL ) { %>
-Chain: <a href='<%= vp.verificationURL; %>'><%= vp.chainName %> @ Block <%= vp.blockNumber %></a><br/>
-Path: <%- uiTool.getVerificationPath(vp.pathSymbols, vp.path); %>
-<% } %>
-
-

@@ -1,23 +1,25 @@
-// Copyright 2022 Colorful Notion, Inc.
-// This file is part of Polkaholic.
+// Copyright 2022-2025 Colorful Notion, Inc.
+// This file is part of polkadot-etl.
 
-// Polkaholic is free software: you can redistribute it and/or modify
+// polkadot-etl is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Polkaholic is distributed in the hope that it will be useful,
+// polkadot-etl is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Polkaholic.  If not, see <http://www.gnu.org/licenses/>.
+// along with polkadot-etl.  If not, see <http://www.gnu.org/licenses/>.
 
 const Query = require("./query");
 const paraTool = require("./paraTool");
 const ethTool = require("./ethTool");
 const mysql = require("mysql2");
+const util = require('util');
+const exec = util.promisify(require("child_process").exec);
 const {
     ethers
 } = require('ethers');
@@ -34,6 +36,7 @@ const {
     hexToBn,
 } = require("@polkadot/util");
 
+const COINGECKO_API_KEY = "-----"; // fill in your own API key
 
 module.exports = class PriceManager extends Query {
     debugLevel = 0;
@@ -932,29 +935,156 @@ from assetRouter join asset on assetRouter.chainID = asset.chainID and assetRout
         }
     }
 
-    async update_coingecko_backfill(startDate = '2022-01-01', endDate = '2022-04-01') {
-        let coingeckoRecs = await this.poolREADONLY.query(`select coingeckoID, symbol, relayChain from xcmasset where coingeckoID is not null`);
-        let coingeckoids = {};
-        for (let r = 0; r < coingeckoRecs.length; r++) {
-            let rec = coingeckoRecs[r];
-            let symbolRelayChain = paraTool.makeAssetChain(rec.symbol, rec.relayChain);
-            coingeckoids[symbolRelayChain] = rec.coingeckoID;
-        }
-
-        let sql = `select symbol, relayChain, logDT, min(unix_timestamp(logDT)) as startTS, count(*) cnt from indexlog left join xcmassetpricelog on indexlog.indexTS = xcmassetpricelog.indexTS where indexlog.chainID = 0 and indexlog.logDT >= '${startDate}' and logDT <= '${endDate}' and symbol in ( select symbol from xcmasset where coingeckoid is not null ) and relayChain in ( 'polkadot', 'kusama' ) and routerAssetChain like '%coingecko%' group by symbol, relayChain, logDT having count(*) != 24 order by logDT`;
-        var fixes = await this.poolREADONLY.query(sql);
-        for (let f = 0; f < fixes.length; f++) {
-            let fix = fixes[f];
-            let symbolRelayChain = paraTool.makeAssetChain(fix.symbol, fix.relayChain);
-            let id = coingeckoids[symbolRelayChain];
-            if (id) {
-                let startTS = fix.startTS;
-                let endTS = fix.startTS + 86400;
-                await this.update_coingecko_market_chart(id, fix.symbol, fix.relayChain, startTS, endTS);
-                await this.sleep(5000);
+    ts_to_snapshot(ts, snapshotBNs) {
+        for (const s of snapshotBNs) {
+            let diff = ts - s.endTS;
+            if (ts >= s.startTS && ts <= s.endTS) {
+                return {
+                    block_hash: s.end_blockhash,
+                    block_number: s.endBN,
+                    ts: s.endTS
+                }
             }
         }
+        // console.log("COULD NOT FIND", ts, snapshotBNs);
+        return null;
     }
+
+    async update_coingecko_today() {
+        let today = this.getCurrentTS();
+        let [logDT, hr] = paraTool.ts_to_logDT_hr(today);
+        if (hr == 0) {
+            [logDT, hr] = paraTool.ts_to_logDT_hr(today - 86400);
+        }
+        await this.update_coingecko_backfill(logDT, logDT);
+    }
+
+    async update_coingecko_backfill(startDate = '2023-11-01', endDate = '2024-02-08') {
+        const axios = require("axios");
+        let coingeckoRecs = await this.poolREADONLY.query(`select coingeckoID, symbol, relayChain, decimals from xcmasset where ( coingeckoID in ('polkadot', 'interlay', 'moonbeam', 'astar', 'interbtc', 'tether', 'acala', 'centrifuge', 'nodle-network', 'parallel-finance', 'pha' ) and relayChain = 'polkadot' ) or ( coingeckoID in ('kilt-protocol', 'kusama', 'bifrost-native-chain') and relayChain = 'kusama' ) `)
+        let coingeckoids = {};
+        let startTS = paraTool.logDT_hr_to_ts(startDate, 0);
+        let startTSyesterday = paraTool.logDT_hr_to_ts(startDate, 0) - 7200;
+        let endTS = paraTool.logDT_hr_to_ts(endDate, 0) + 86400
+        let fns = {}
+        let hit = {}
+        let data = {};
+        for (let t = startTS; t < endTS; t += 86400) {
+            let ts0 = t;
+            let ts1 = t + 86400;
+            let [logDTy, hry] = paraTool.ts_to_logDT_hr(ts0 - 3600);
+            let [logDT, hr] = paraTool.ts_to_logDT_hr(ts0);
+
+            for (let rec of coingeckoRecs) {
+                let symbol = rec.symbol;
+                let decimals = rec.decimals;
+                let symbolRelayChain = paraTool.makeAssetChain(rec.symbol, rec.relayChain);
+                let id = rec.coingeckoID;
+                var url = `https://pro-api.coingecko.com/api/v3/coins/${id}/market_chart/range?vs_currency=USD&from=${ts0}&to=${ts1}&x_cg_pro_api_key=${COINGECKO_API_KEY}`;
+                let snapshotBNs0 = await this.getSnapshotBN(0, logDTy, 0, 23);
+                let snapshotBNs1 = await this.getSnapshotBN(0, logDT, 0, 23);
+                let snapshotBNs = snapshotBNs0.concat(snapshotBNs1)
+                try {
+                    var headers = {
+                        "accept": "application/json"
+                    };
+                    var resp;
+                    resp = await axios.get(url, {
+                        headers: headers
+                    });
+
+                    const prices_arr = resp.data.prices;
+                    var a = [];
+                    let kv = {
+                        symbol,
+                        id
+                    };
+                    let NL = "\r\n";
+                    for (const t of prices_arr) {
+                        var tm = Math.round(t[0] / 1000);
+                        let s = this.ts_to_snapshot(tm, snapshotBNs);
+                        if (s) {
+                            if (hit[symbol] == undefined) {
+                                hit[symbol] = {}
+                            }
+                            if (hit[symbol][s.ts]) {
+
+                            } else {
+                                let out = {
+                                    // required
+                                    chain_name: "polkadot",
+                                    ts: s.ts,
+                                    block_number: s.block_number,
+                                    block_hash: s.block_hash,
+                                    section: "pricefeed",
+                                    storage: "price",
+                                    source: "coingecko",
+                                    // optional
+                                    track: "coingecko",
+                                    track_val: symbol,
+                                    kv,
+                                    pv: {
+                                        price: t[1],
+                                        decimals
+                                    }
+                                }
+                                hit[symbol][s.ts] = true;
+                                let [logDTa, hra] = paraTool.ts_to_logDT_hr(s.ts);
+                                console.log(symbol, logDTa, hra, t[1]);
+
+                                let canonicalTS = Math.floor(s.ts / 3600) * 3600;
+                                let [logDTc, hrc] = paraTool.ts_to_logDT_hr(canonicalTS);
+                                if (data[logDTc] == undefined) {
+                                    data[logDTc] = {};
+                                }
+                                if (data[logDTc][symbol] == undefined) {
+                                    data[logDTc][symbol] = {};
+                                }
+                                data[logDTc][symbol][hrc] = out;
+
+                            }
+                        }
+                    }
+                } catch (err) {
+                    console.log(err);
+                    this.logger.error({
+                        op: "update_coingecko_market_chart",
+                        url: url,
+                        err
+                    });
+                }
+                await this.sleep(1000);
+            }
+            let out = [];
+            for (const symbol of Object.keys(data[logDT])) {
+                for (let h = 0; h < 24; h++) {
+                    if (data[logDT][symbol][h] == undefined) {
+                        let requiredTS = paraTool.logDT_hr_to_ts(logDT, h);
+                        // find the first hour
+                        for (let a = 0; a < 24; a++) {
+                            if (data[logDT][symbol][a]) {
+                                let b = JSON.parse(JSON.stringify(data[logDT][symbol][a]))
+                                b.ts = requiredTS;
+                                data[logDT][symbol][h] = b;
+                                a = 50;
+                            }
+                        }
+                    }
+                    console.log(symbol, h, data[logDT][symbol][h].pv.price);
+                    out.push(JSON.stringify(data[logDT][symbol][h]));
+                }
+            }
+            let fn = `/tmp/polkadot-prices-${logDT}.json`;
+            let f = fs.openSync(fn, 'w', 0o666);
+            fs.writeSync(f, out.join("\r\n"));
+            fs.closeSync(f);
+            let logDT0 = logDT.replaceAll("-", "")
+            let cmd = `bq load --project_id=substrate-etl --max_bad_records=10 --source_format=NEWLINE_DELIMITED_JSON --replace=true 'polkadot_analytics.snapshots0_coingecko\$${logDT0}' /tmp/polkadot-prices-${logDT}.json`;
+            console.log(cmd);
+            await exec(cmd);
+        }
+    }
+
 
     // update assetlog with prices/market_caps/volumes from coingecko API
     async update_coingecko_market_chart(id, symbol, relayChain, startTS, endTS) {

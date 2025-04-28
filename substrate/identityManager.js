@@ -1,18 +1,18 @@
-// Copyright 2022 Colorful Notion, Inc.
-// This file is part of Polkaholic.
+// Copyright 2022-2025 Colorful Notion, Inc.
+// This file is part of polkadot-etl.
 
-// Polkaholic is free software: you can redistribute it and/or modify
+// polkadot-etl is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Polkaholic is distributed in the hope that it will be useful,
+// polkadot-etl is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Polkaholic.  If not, see <http://www.gnu.org/licenses/>.
+// along with polkadot-etl.  If not, see <http://www.gnu.org/licenses/>.
 
 const Crawler = require("./crawler");
 const paraTool = require("./paraTool");
@@ -38,7 +38,7 @@ module.exports = class IdentityManager extends Crawler {
         }
     }
 
-    async dump_identity(){
+    async dump_identity() {
         /*
         if (chainID != paraTool.chainIDPolkadot || chainID != paraTool.chainIDKusama){
             console.log(`chainID=${chainID} Not supported`)
@@ -62,7 +62,7 @@ module.exports = class IdentityManager extends Crawler {
         let identityMap = {}
         let subIdentityMap = {}
         let verifiedStatus = ["knownGood", "reasonable"]
-        for (const account of accounts){
+        for (const account of accounts) {
             let pubkey = account.pubkey
             //console.log(`pubkey=${account.pubkey}, account`, account)
             let acct = {
@@ -89,9 +89,9 @@ module.exports = class IdentityManager extends Crawler {
                 if (account.kusama_info != undefined) acct.kusama_info = JSON.parse(`${account.kusama_info}`)
                 if (account.polkadot_judgements != undefined) {
                     acct.polkadot_judgements = JSON.parse(account.polkadot_judgements)
-                    for (const polkadot_judgement of acct.polkadot_judgements){
-                        if (polkadot_judgement.status != undefined){
-                            if (verifiedStatus.includes(polkadot_judgement.status)){
+                    for (const polkadot_judgement of acct.polkadot_judgements) {
+                        if (polkadot_judgement.status != undefined) {
+                            if (verifiedStatus.includes(polkadot_judgement.status)) {
                                 acct.polkadot_judgement_verified = true
                             }
                         }
@@ -99,22 +99,22 @@ module.exports = class IdentityManager extends Crawler {
                 }
                 if (account.kusama_judgements != undefined) {
                     acct.kusama_judgements = JSON.parse(account.kusama_judgements)
-                    for (const kusama_judgement of acct.kusama_judgements){
-                        if (kusama_judgement.status != undefined){
-                            if (verifiedStatus.includes(kusama_judgement.status)){
+                    for (const kusama_judgement of acct.kusama_judgements) {
+                        if (kusama_judgement.status != undefined) {
+                            if (verifiedStatus.includes(kusama_judgement.status)) {
                                 acct.kusama_judgement_verified = true
                             }
                         }
                     }
                 }
-            } catch (e){
+            } catch (e) {
                 console.log(`json parse err`, e)
             }
-            if (acct.polkadot_info && acct.polkadot_info.display != undefined){
+            if (acct.polkadot_info && acct.polkadot_info.display != undefined) {
                 acct.polkadot_name = acct.polkadot_info.display
                 acct.polkadot_fullname = acct.polkadot_info.display
             }
-            if (acct.kusama_info && acct.kusama_info.display != undefined){
+            if (acct.kusama_info && acct.kusama_info.display != undefined) {
                 acct.kusama_name = acct.kusama_info.display
                 acct.kusama_fullname = acct.kusama_info.display
             }
@@ -122,7 +122,7 @@ module.exports = class IdentityManager extends Crawler {
             fs.writeSync(f, JSON.stringify(acct) + NL);
             identityMap[pubkey] = acct
         }
-        for (const subAccount of subAccounts){
+        for (const subAccount of subAccounts) {
             //console.log(`subAccount`, subAccount)
             let pubkey = subAccount.pubkey
             let subAcct = {
@@ -146,29 +146,29 @@ module.exports = class IdentityManager extends Crawler {
                 kusama_judgements: null,
                 kusama_judgement_verified: null,
             };
-            if (subAccount.polkadot_subname != undefined){
+            if (subAccount.polkadot_subname != undefined) {
                 subAcct.polkadot_subname = subAccount.polkadot_subname
             }
-            if (subAccount.kusama_subname != undefined){
+            if (subAccount.kusama_subname != undefined) {
                 subAcct.kusama_subname = subAccount.kusama_subname
             }
-            if (subAccount.kusama_parent != undefined  && subAccount.kusama_parent != "null"){
+            if (subAccount.kusama_parent != undefined && subAccount.kusama_parent != "null") {
                 subAcct.kusama_parent = subAccount.kusama_parent
                 let parent_identity = identityMap[subAcct.kusama_parent]
                 //console.log(`subAcct=${pubkey} kusama_parent=${subAccount.kusama_parent}, parent_identity`, parent_identity)
                 subAcct.kusama_is_subidentity = true
-                subAcct.kusama_fullname = (parent_identity.kusama_name)? `${parent_identity.kusama_name}/${subAccount.kusama_subname}`: `/${subAccount.kusama_subname}`
+                subAcct.kusama_fullname = (parent_identity.kusama_name) ? `${parent_identity.kusama_name}/${subAccount.kusama_subname}` : `/${subAccount.kusama_subname}`
                 subAcct.kusama_name = parent_identity.kusama_name
                 subAcct.kusama_info = parent_identity.kusama_info
                 subAcct.kusama_judgements = parent_identity.kusama_judgements
                 subAcct.kusama_judgement_verified = parent_identity.kusama_judgement_verified
             }
-            if (subAccount.polkadot_parent != undefined && subAccount.polkadot_parent != "null"){
+            if (subAccount.polkadot_parent != undefined && subAccount.polkadot_parent != "null") {
                 subAcct.polkadot_parent = subAccount.polkadot_parent
                 let parent_identity = identityMap[subAcct.polkadot_parent]
                 //console.log(`subAcct=${pubkey} polkadot_parent=${subAcct.polkadot_parent}, parent_identity`, parent_identity)
                 subAcct.polkadot_is_subidentity = true
-                subAcct.polkadot_fullname = (parent_identity.polkadot_name)? `${parent_identity.polkadot_name}/${subAccount.polkadot_subname}`: `/${subAccount.polkadot_subname}`
+                subAcct.polkadot_fullname = (parent_identity.polkadot_name) ? `${parent_identity.polkadot_name}/${subAccount.polkadot_subname}` : `/${subAccount.polkadot_subname}`
                 subAcct.polkadot_name = parent_identity.polkadot_name
                 subAcct.polkadot_info = parent_identity.polkadot_info
                 subAcct.polkadot_judgements = parent_identity.polkadot_judgements
@@ -179,7 +179,7 @@ module.exports = class IdentityManager extends Crawler {
             subIdentityMap[pubkey] = subAcct
         }
         let cmd0 = `gsutil cp ${fn} gs://substrate_identity/`
-        let cmd1 = `bq load --project_id=substrate-etl --max_bad_records=10 --source_format=NEWLINE_DELIMITED_JSON --replace=true polkadot_analytics.identity gs://substrate_identity/* schema/substrateetl/identity.json`
+        let cmd1 = `bq load --project_id=substrate-etl --max_bad_records=10 --source_format=NEWLINE_DELIMITED_JSON --replace=true polkadot_analytics.identity gs://substrate_identity/* /root/go/src/github.com/jam-duna/polkadot-etl/substrate/schema/substrateetl/identity.json`
         console.log(cmd0)
         console.log(cmd1)
         await exec(cmd0);
@@ -556,7 +556,7 @@ module.exports = class IdentityManager extends Crawler {
         } catch (e) {
             console.log(`processIdentityVal err decoratedVal=${decoratedVal}, err=`, e)
         }
-        console.log(`[${addr}]`, identityRec)
+        console.log(`[${addr}] rec`, identityRec)
         return [true, identityRec]
     }
 
@@ -572,8 +572,8 @@ module.exports = class IdentityManager extends Crawler {
         try {
             if (decoratedVal == '') {
                 //identity removed / failed to begin with
-                console.log(`subIdentity [${addr}] removed`)
-                return [false, addr]
+                console.log(`subIdentity [${subAddr}] removed`)
+                return [false, subAddr]
             }
             let v = JSON.parse(decoratedVal)
             let v2 = JSON.parse(decoratedVal2)
@@ -587,13 +587,15 @@ module.exports = class IdentityManager extends Crawler {
                     subIdentityRec.subName = `${nameFld[fld]} (${fld})`
                 }
             }
-
             //console.log(`parsed [${subAddr}]`, v)
 
         } catch (e) {
             console.log(`processSubIdentityVal err decoratedVal=${decoratedVal}, err=`, e)
         }
-        console.log(`[${subAddr}]`, subIdentityRec)
+        if (subIdentityRec.subName != undefined) {
+            subIdentityRec.subName = subIdentityRec.subName.replaceAll("'", "_")
+        }
+        console.log(`[${subAddr}] rec`, subIdentityRec)
         return [true, subIdentityRec]
     }
 

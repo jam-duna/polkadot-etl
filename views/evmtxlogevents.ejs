@@ -1,8 +1,0 @@
-<% if ( log.signature ) { %>
-<button type="button" class="btn btn-outline-secondary btn-sm text-capitalize" title="<%- log.signature; %>">
-  <%= uiTool.getEVMMethod(log.signature) %>
-</button>
-<% } %>
-<% if ( log.events != undefined ) { %>
-<%- include("evmtxparams", {params: log.events, decoded: null}); %>
-<% } %>

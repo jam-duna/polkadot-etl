@@ -1,18 +1,18 @@
-// Copyright 2022 Colorful Notion, Inc.
-// This file is part of Polkaholic.
+// Copyright 2022-2025 Colorful Notion, Inc.
+// This file is part of polkadot-etl.
 
-// Polkaholic is free software: you can redistribute it and/or modify
+// polkadot-etl is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Polkaholic is distributed in the hope that it will be useful,
+// polkadot-etl is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Polkaholic.  If not, see <http://www.gnu.org/licenses/>.
+// along with polkadot-etl.  If not, see <http://www.gnu.org/licenses/>.
 const bs58 = require("bs58");
 const {
     Keyring,
@@ -43,6 +43,8 @@ const {
     createKeyMulti,
     sortAddresses
 } = require('@polkadot/util-crypto');
+
+const sqlFormatter = require('sql-formatter')
 
 const keyring = new Keyring({
     type: "sr25519",
@@ -741,7 +743,7 @@ function getParaIDExtra(relaychain = 'polkadot') {
 }
 
 function getRelayChainByChainID(chainID = 0) {
-    if (chainID == 0 || chainID == 22086 || chainID == 22100) {
+    if (chainID == 0) {
         return 'polkadot'; // Subsocial (22100, now paraID 2101) + Kilt (22086, 2086 on both)
     } else if (chainID == 2) {
         return 'kusama'
@@ -771,6 +773,9 @@ function getRelayChainID(relaychain = 'polkadot') {
         case 'kusama':
             return 2
             break;
+        case 'shibuya':
+            return 30000
+            break;
         case 'rococo':
             return 40000
             break;
@@ -785,11 +790,6 @@ function getRelayChainID(relaychain = 'polkadot') {
 
 function getChainIDFromParaIDAndRelayChain(paraID, relayChain = 'polkadot') {
     // parachains that moved relaychains
-    // kilt spiritnet chainID 22086 is now paraID 2086 on polkadot
-    if (paraID == 2086 && relayChain == "polkadot") return (22086);
-    // subsocial chainID 22110 is now paraID 2101 on polkadot
-    if (paraID == 2101 && relayChain == "polkadot") return (22100);
-
     let relayChainID = getRelayChainID(relayChain)
     let paraIDExtra = getParaIDExtra(relayChain)
     if (paraID == 0) return relayChainID
@@ -1418,6 +1418,78 @@ function parseXcmInteriorKeyV1(xcmInteriorKey = '[{"parachain":2023},{"palletIns
     } else return [null, null]
 }
 
+function formatBQ(sql) {
+    try {
+        var s = sqlFormatter.format(sql, {
+            language: 'bigquery',
+            tabWidth: 2,
+            keywordCase: 'upper',
+            linesBetweenQueries: 2,
+        });
+        return s
+    } catch (e) {
+        return s
+    }
+}
+
+function formatTrino(sql) {
+    try {
+        var s = sqlFormatter.format(sql, {
+            language: 'trino',
+            tabWidth: 2,
+            keywordCase: 'upper',
+            linesBetweenQueries: 2,
+        });
+        return s
+    } catch (e) {
+        return s
+    }
+}
+
+function formatSQL(sql) {
+    try {
+        var s = sqlFormatter.format(sql, {
+            language: 'mysql',
+            tabWidth: 2,
+            keywordCase: 'upper',
+            linesBetweenQueries: 2,
+        });
+        return s
+    } catch (e) {
+        return s
+    }
+}
+
+function ts_to_logDT_hr(ts) {
+    var a = new Date(ts * 1000);
+    let dd = a.getUTCDate().toString().padStart(2, '0');
+    let mm = String(a.getUTCMonth() + 1).padStart(2, '0'); //January is 0!
+    let yyyy = a.getUTCFullYear();
+    let logDT = `${yyyy}-${mm}-${dd}`;
+    var hr = a.getUTCHours();
+    return [logDT, hr];
+}
+
+function logDT_hr_to_ts(logDT, hr) {
+    let logDTS = logDT.replaceAll('-', '')
+    var y = logDTS.substr(0, 4),
+        m = logDTS.substr(4, 2),
+        d = logDTS.substr(6, 2)
+    let a = new Date(`${y}-${m}-${d}`)
+    let logDTTS = a.getTime() / 1000 + hr * 3600;
+    return logDTTS
+}
+
+function getTimeFormat(logDT) {
+    //2020-12-01 -> [TS, '20221201', '2022-12-01', '2022-11-30']
+    //20201201 -> [TS, '20221201', '2022-12-01', '2022-11-30']
+    let logTS = logDT_hr_to_ts(logDT, 0)
+    let logYYYYMMDD = logDT.replaceAll('-', '')
+    let [currDT, _c] = ts_to_logDT_hr(logTS)
+    let [prevDT, _p] = ts_to_logDT_hr(logTS - 86400)
+    return [logTS, logYYYYMMDD, currDT, prevDT]
+}
+
 class NotFoundError extends Error {
     constructor(message) {
         // Needs to pass both `message` and `options` to install the "cause" property.
@@ -1444,7 +1516,7 @@ module.exports = {
     debugTracing: 4,
 
     // Kusama parachains
-    chainIDStatemine: 21000,
+    chainIDKusamaAssetHub: 21000,
     chainIDEncointer: 21001,
     chainIDKarura: 22000,
     chainIDBifrostKSM: 22001,
@@ -1466,7 +1538,7 @@ module.exports = {
     //chainIDLoom: 22080,
     chainIDCalamari: 22084,
     chainIDHeiko: 22085,
-    chainIDKilt: 22086,
+    chainIDKilt: 2086,
     chainIDPicasso: 22087,
     chainIDAltair: 22088,
     chainIDBasilisk: 22090,
@@ -1476,7 +1548,7 @@ module.exports = {
     chainIDBitcountry: 22096,
     chainIDSubsocial: 22100,
 
-    chainIDZeitgeist: 22101,
+    chainIDZeitgeist: 2092,
     chainIDPichiu: 22102,
     chainIDDarwiniaCrab: 22105,
     chainIDLitmus: 22106,
@@ -1494,7 +1566,7 @@ module.exports = {
     chainIDTinkernet: 22125,
 
     // Polkadot parachains
-    chainIDStatemint: 1000,
+    chainIDPolkadotAssetHub: 1000,
     chainIDAcala: 2000,
     chainIDClover: 2002,
     //chainIDdarwiniaBackup: 2003,
@@ -1529,6 +1601,7 @@ module.exports = {
     chainIDOak: 2090,
     chainIDFrequency: 2091,
     chainIDPendulum: 2094,
+    chainIDMythos: 3369,
 
     // other
     chainIDUniqueOther: 255,
@@ -1983,26 +2056,11 @@ module.exports = {
     decodeAssetChain: function(assetChainEncoded) {
         return assetChainEncoded.replaceAll("~~", ":")
     },
+    getTimeFormat: getTimeFormat,
     //1645135200 -> [ '2022-02-17', 22 ]
-    ts_to_logDT_hr: function ts_to_logDT_hr(ts) {
-        var a = new Date(ts * 1000);
-        let dd = a.getUTCDate().toString().padStart(2, '0');
-        let mm = String(a.getUTCMonth() + 1).padStart(2, '0'); //January is 0!
-        let yyyy = a.getUTCFullYear();
-        let logDT = `${yyyy}-${mm}-${dd}`;
-        var hr = a.getUTCHours();
-        return [logDT, hr];
-    },
+    ts_to_logDT_hr: ts_to_logDT_hr,
     // '2022-02-17', 22 -> 1645135200
-    logDT_hr_to_ts: function logDT_hr_to_ts(logDT, hr) {
-        let logDTS = logDT.replaceAll('-', '')
-        var y = logDTS.substr(0, 4),
-            m = logDTS.substr(4, 2),
-            d = logDTS.substr(6, 2)
-        let a = new Date(`${y}-${m}-${d}`)
-        let logDTTS = a.getTime() / 1000 + hr * 3600;
-        return logDTTS
-    },
+    logDT_hr_to_ts: logDT_hr_to_ts,
     hexAsU8: function(hexStr) {
         return hexToU8a(hexStr)
     },
@@ -2058,6 +2116,10 @@ module.exports = {
     getAuthor: function(digest, validatorsList) {
         return getAuthor(digest, validatorsList);
     },
+    formatBQ: formatBQ,
+    formatTrino: formatTrino,
+    formatSQL: formatSQL,
+
     isJSONString: function(x) {
         if (typeof x != "string") return (false);
         let l = x.length;

@@ -15,7 +15,9 @@ fs.readFile(csvFilePath, 'utf8', (err, data) => {
 
     const url = 'https://api.dune.com/api/v1/table/upload/csv';
 
-    const headers = { 'X-Dune-Api-Key': apiKey };
+    const headers = {
+        'X-Dune-Api-Key': apiKey
+    };
 
     const payload = {
         "table_name": "polkadot_stakings",
@@ -29,8 +31,8 @@ fs.readFile(csvFilePath, 'utf8', (err, data) => {
     // Configuration options for Axios
     const axiosConfig = {
         headers: headers,
-        maxContentLength: Infinity,  // No limit on the content length
-        maxBodyLength: Infinity      // No limit on the body length
+        maxContentLength: Infinity, // No limit on the content length
+        maxBodyLength: Infinity // No limit on the body length
     };
 
     //return

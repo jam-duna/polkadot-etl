@@ -1,18 +1,18 @@
-// Copyright 2022 Colorful Notion, Inc.
-// This file is part of Polkaholic.
+// Copyright 2022-2025 Colorful Notion, Inc.
+// This file is part of polkadot-etl.
 
-// Polkaholic is free software: you can redistribute it and/or modify
+// polkadot-etl is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Polkaholic is distributed in the hope that it will be useful,
+// polkadot-etl is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Polkaholic.  If not, see <http://www.gnu.org/licenses/>.
+// along with polkadot-etl.  If not, see <http://www.gnu.org/licenses/>.
 
 const PolkaholicDB = require("./polkaholicDB");
 const paraTool = require("./paraTool");
@@ -527,7 +527,7 @@ module.exports = class AssetManager extends EvmManager {
                 let symbolRelaychain = paraTool.makeAssetChain(v.symbol, v.relayChain);
                 if (xcmSymbolInfo[symbolRelaychain] == undefined) {
                     let xcmV1MultiLocation = paraTool.convertXcmInteriorKeyToXcmV1MultiLocation(xcmInteriorKey)
-                    let evmMultiLocation = paraTool.convertXcmV1MultiLocationToMoonbeamEvmMultiLocation(xcmV1MultiLocation)
+                    //let evmMultiLocation = paraTool.convertXcmV1MultiLocationToMoonbeamEvmMultiLocation(xcmV1MultiLocation)
                     let s = {
                         assetType: "Token",
                         decimals: v.decimals,
@@ -541,7 +541,7 @@ module.exports = class AssetManager extends EvmManager {
                         symbolRelaychain: paraTool.makeAssetChain(v.symbol, v.relayChain),
                         //xcmV1MultiLocationHex: xcmV1MultiLocationHex,
                         xcmV1MultiLocation: JSON.stringify(xcmV1MultiLocation),
-                        evmMultiLocation: JSON.stringify(evmMultiLocation),
+                        //evmMultiLocation: JSON.stringify(evmMultiLocation),
                         assets: {},
                         xcContractAddress: {},
                         xcCurrencyID: {},
@@ -975,11 +975,15 @@ module.exports = class AssetManager extends EvmManager {
         let decimals = (assetInfo.decimals != undefined) ? `${assetInfo.decimals}` : 'NULL'
         let isLocalAsset = (assetInfo.isLocalAsset != undefined) ? assetInfo.isLocalAsset : 'NULL'
         let sqlDebug = true
+        let symbol = assetInfo.symbol || "";
+        if (symbol.length > 32) {
+            symbol = symbol.substr(0, 32);
+        }
         await this.upsertSQL({
             "table": "asset",
             "keys": ["asset", "chainID"],
             "vals": ["assetName", "symbol", "decimals", "assetType", "isNativeChain", "currencyID", "isLocalAsset"],
-            "data": [`( '${asset}', '${chainID}', '${assetInfo.name}', '${assetInfo.symbol}', ${decimals}, '${assetInfo.assetType}', '${isNativeChain}', ${currencyID}, ${isLocalAsset} )`],
+            "data": [`( '${asset}', '${chainID}', ${mysql.escape(assetInfo.name)}, ${mysql.escape(symbol)}, ${decimals}, '${assetInfo.assetType}', '${isNativeChain}', ${currencyID}, ${isLocalAsset} )`],
             "replaceIfNull": ["assetName", "symbol", "decimals", "assetType", "isNativeChain", "currencyID", "isLocalAsset"],
         }, sqlDebug);
         assetInfo.assetName = assetInfo.name //TODO: cached assetInfo from mysql has assetName but not "name"
@@ -1923,6 +1927,7 @@ module.exports = class AssetManager extends EvmManager {
 
     async paramToCallsInternal(extrinsicID, section, method, callIndex, args, argsDef, chainID, ts, depth = '0', flatCalls = [], decorate = true, decorateExtra = ["data", "address", "usd"]) {
         //this.chainParserInit(chainID, this.debugLevel);
+        //console.log(`paramToCallsInternal ${extrinsicID}, ${section}:${method}, callIndex=${callIndex}, depth=${depth}, arg`, args, `argsDef=${JSON.stringify(argsDef)}`)
         let [decorateData, decorateAddr, decorateUSD, decorateRelated] = this.getDecorateOption(decorateExtra)
         let sectionMethod = `${section}:${method}`
         let args_def = (argsDef != undefined) ? argsDef : null
@@ -1941,25 +1946,55 @@ module.exports = class AssetManager extends EvmManager {
                     leaf: false,
                     root: (depth == '0') ? true : false
                 }
+
                 flatCalls.push(f)
-                let i = 0;
-                for (const c of args.calls) {
-                    //let c = args.calls[i]
+                //let i = 0;
+                //for (const c of args.calls) {
+                for (let i = 0; i < args.calls.length; i++) {
+                    let c = args.calls[i]
                     let call_section = c.section;
                     let call_method = c.method;
                     let call_lookup_index = c.callIndex;
-                    let nextDepth = `${depth}-${i}`
+                    let call_args = c.args
+                    let call_argsDef = c.argsDef
+                    let call_address = ""
+                    if (c.call != undefined) {
+                        let c_call = c.call
+                        if (c_call.section != undefined && c_call.method != undefined && c_call.callIndex != undefined) {
+                            call_lookup_index = c_call.callIndex;
+                            call_section = c_call.section;
+                            call_method = c_call.method;
+                            call_args = c_call.args
+                            call_argsDef = c_call.argsDef
+                            if (chainID == paraTool.chainIDMythos) {
+                                if (c.address != undefined) call_address = `@${c.address.toLowerCase()}`
+                                if (c.from != undefined) call_address = `@${c.from.toLowerCase()}`
+                            }
+                            //console.log("MYTHOS NORMAL CASE ...", c, c_call);
+                        } else {
+                            console.log(`*paramToCallsInternal ${extrinsicID}, ${section}:${method}, callIndex=${callIndex}, depth=${depth}, arg`, args, `argsDef=${JSON.stringify(argsDef)}`)
+                            console.log("MYTHOS MUTANT CASE !!!", c, c_call);
+                            //process.exit(0);
+                        }
+                        //go one level deep into struct by removing call
+                    }
+                    let nextDepth = `${depth}-${i}${call_address}`
                     //console.log(depth, "call ", i , call_section, call_method, c);
-                    //console.log(`calls[${i}] nextDepth=${nextDepth} call_section=${call_section}, call_method=${call_method}`, c)
-                    i++;
-                    await this.paramToCallsInternal(extrinsicID, call_section, call_method, call_lookup_index, c.args, c.argsDef, chainID, ts, nextDepth, flatCalls, decorate, decorateExtra)
+                    //console.log(`+++ calls[${i}] nextDepth=${nextDepth} call_section=${call_section}, call_method=${call_method} call_address=${call_address}`, c)
+                    //i++;
+                    await this.paramToCallsInternal(extrinsicID, call_section, call_method, call_lookup_index, call_args, call_argsDef, chainID, ts, nextDepth, flatCalls, decorate, decorateExtra)
                 }
             } else if (args.call != undefined) { // this is an object
                 let call = args.call
                 let call_section = call.section;
                 let call_method = call.method;
                 let call_lookup_index = call.callIndex;
-                //console.log(`${depth}:${sectionMethod} descend into call`, call)
+                let call_address = ""
+                //console.log(`AAA ${depth}:${sectionMethod} descend into call`, call)
+                if (chainID == paraTool.chainIDMythos) {
+                    if (args.address != undefined) call_address = `@${args.address.toLowerCase()}`
+                    if (args.from != undefined) call_address = `@${args.from.toLowerCase()}`
+                }
                 let f = {
                     id: `${depth}`,
                     index: call_index,
@@ -1971,8 +2006,8 @@ module.exports = class AssetManager extends EvmManager {
                     root: (depth == '0') ? true : false
                 }
                 flatCalls.push(f)
-                let nextDepth = `${depth}-0`
-                //console.log(`call nextDepth=${nextDepth} call_section=${call_section}, call_method=${call_method}`, call)
+                let nextDepth = `${depth}-0${call_address}`
+                //console.log(`BBB call nextDepth=${nextDepth} call_section=${call_section}, call_method=${call_method}`, call)
                 await this.paramToCallsInternal(extrinsicID, call_section, call_method, call_lookup_index, call.args, call.argsDef, chainID, ts, nextDepth, flatCalls, decorate, decorateExtra)
             } else {
                 //collect leaf node here
@@ -1993,8 +2028,10 @@ module.exports = class AssetManager extends EvmManager {
             }
         } catch (err) {
             console.log(err);
+            //process.exit(1)
             this.logger.error({
                 "op": "query.paramToCallsInternal",
+                "extrinsicID": extrinsicID,
                 section,
                 method,
                 args,
@@ -2092,26 +2129,30 @@ module.exports = class AssetManager extends EvmManager {
                 //console.log("targetAsset", targetAsset)
                 for (const idx of idxs) {
                     let dataVal = event.data[idx]
-                    let bal = paraTool.toBn(dataVal)
-                    decodedData[idx].data = bal.toString() // convert dec, '0x...' to 'intStr'
-                    bal = bal / 10 ** chainDecimals // always get here
-                    if (decorateUSD) {
-                        let p = await this.computePriceUSD({
-                            val: bal,
-                            asset: targetAsset,
-                            chainID,
-                            ts
-                        })
-                        decodedData[idx].symbol = chainSymbol
-                        decodedData[idx].dataRaw = bal
-                        if (p) {
-                            decodedData[idx].dataUSD = p.valUSD
-                            decodedData[idx].priceUSD = p.priceUSD
-                            if (isUI) decodedData[idx].priceUSDCurrent = p.priceUSDCurrent
+                    try {
+                        let bal = paraTool.toBn(dataVal)
+                        decodedData[idx].data = bal.toString() // convert dec, '0x...' to 'intStr'
+                        bal = bal / 10 ** chainDecimals // always get here
+                        if (decorateUSD) {
+                            let p = await this.computePriceUSD({
+                                val: bal,
+                                asset: targetAsset,
+                                chainID,
+                                ts
+                            })
+                            decodedData[idx].symbol = chainSymbol
+                            decodedData[idx].dataRaw = bal
+                            if (p) {
+                                decodedData[idx].dataUSD = p.valUSD
+                                decodedData[idx].priceUSD = p.priceUSD
+                                if (isUI) decodedData[idx].priceUSDCurrent = p.priceUSDCurrent
+                            }
+                        } else {
+                            decodedData[idx].symbol = chainSymbol
+                            decodedData[idx].dataRaw = bal
                         }
-                    } else {
-                        decodedData[idx].symbol = chainSymbol
-                        decodedData[idx].dataRaw = bal
+                    } catch (err) {
+                        // console.log
                     }
                 }
                 [decodedData, isTransferType] = this.generateTransferSummary(pallet_method, addressList, decodedData)

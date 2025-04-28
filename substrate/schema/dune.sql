@@ -1,0 +1,20 @@
+
+
+CREATE TABLE `dunelog` (
+  `chainID` int(11) NOT NULL,
+  `indexTS` int(11) NOT NULL DEFAULT '0',
+  `tableName` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `logDT` date NOT NULL,
+  `bytesWritten` int(11) DEFAULT '0',
+  `indexDT` datetime DEFAULT NULL,
+  `elapsedSeconds` int(11) DEFAULT '0',
+  `indexed` tinyint(4) DEFAULT '0',
+  `readyForIndexing` tinyint(4) DEFAULT '0',
+  `numIndexingErrors` int(11) DEFAULT '0',
+  `numIndexingWarns` int(11) DEFAULT '0',
+  `attempted` int(11) DEFAULT '0',
+  `lastAttemptStartDT` datetime DEFAULT NULL,
+  `lastAttemptEndDT` datetime DEFAULT NULL,
+  `lastAttemptHostname` varchar(32) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  PRIMARY KEY (`chainID`,`indexTS`,`tableName`)
+);

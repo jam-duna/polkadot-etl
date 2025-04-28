@@ -1,5 +1,0 @@
-<% if ( asset.currencyID ) { %>
-  <a class="btn btn-sm btn-outline-info text-capitalize" href='/asset/<%= encodeURIComponent(asset.chainID); %>/<%= encodeURIComponent(asset.currencyID); %>'><%= asset.assetType %> Info</a>
-<% } else if ( asset.asset ) { %>
-  <a class="btn btn-sm btn-outline-info text-capitalize" href='/asset/<%= encodeURIComponent(asset.chainID); %>/<%= encodeURIComponent(asset.asset); %>'><%= asset.assetType %> Info</a>
-<% } %>
