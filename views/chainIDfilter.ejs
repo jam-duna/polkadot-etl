@@ -1,8 +1,0 @@
-<% if ( accountchains ) { %>
-<select class="select" multiple id="chainIDfilter">
-<% for (let i=0; i < accountchains.length; i++) { %>
-   <option value="<%= accountchains[i].id; %>"><%= accountchains[i].chainName; %></option>
-<% }%>
-</select>
-<label class="form-label select-label">Filter by selected chains</label>
-<% } %>

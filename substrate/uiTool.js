@@ -1,18 +1,18 @@
-// Copyright 2022 Colorful Notion, Inc.
-// This file is part of Polkaholic.
+// Copyright 2022-2025 Colorful Notion, Inc.
+// This file is part of polkadot-etl.
 
-// Polkaholic is free software: you can redistribute it and/or modify
+// polkadot-etl is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Polkaholic is distributed in the hope that it will be useful,
+// polkadot-etl is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Polkaholic.  If not, see <http://www.gnu.org/licenses/>.
+// along with polkadot-etl.  If not, see <http://www.gnu.org/licenses/>.
 
 const paraTool = require('./paraTool');
 const jsonld = require('./jsonld');
@@ -22,9 +22,6 @@ const {
 var util_crypto_1 = require("@polkadot/util-crypto");
 
 const assetChainSeparator = "~" // TODO: redundant, get from paraTool instead
-const {
-    createCanvas
-} = require('canvas');
 const {
     renderIcon
 } = require('@download/blockies');
@@ -727,7 +724,7 @@ module.exports = {
 
     presentBlockiesOrIdenticon: function(address, sz = 128) {
         if (address.length == '42') {
-            let cl = `width="${sz}px"  loading="lazy"`
+            /*let cl = `width="${sz}px"  loading="lazy"`
             const canvas = createCanvas(sz, sz);
             var icon = renderIcon({
                     seed: address.toLowerCase(), // seed used to generate icon data, default: random
@@ -738,14 +735,14 @@ module.exports = {
                 },
                 canvas
             );
-            return ('<img class="circularImage" src="' + canvas.toDataURL() + `" ${cl} />`)
+            return ('<img class="circularImage" src="' + canvas.toDataURL() + `" ${cl} />`) */
         } else {
             return (`<img class="circularImage" src="/identicon/${address}" width="${sz}px"  loading="lazy"/>`)
         }
     },
 
     presentBlockies: function(address, sz = 128) {
-        const canvas = createCanvas(sz, sz);
+        /*const canvas = createCanvas(sz, sz);
         let cl = `width="${sz}"  loading="lazy"`
         var icon = renderIcon({
                 seed: address.toLowerCase(), // seed used to generate icon data, default: random
@@ -756,7 +753,7 @@ module.exports = {
             },
             canvas
         );
-        return ('<img class="circularImage" src="' + canvas.toDataURL() + `" ${cl} />`)
+        return ('<img class="circularImage" src="' + canvas.toDataURL() + `" ${cl} />`) */
     },
     txToJSONLD: function(tx) {
         try {

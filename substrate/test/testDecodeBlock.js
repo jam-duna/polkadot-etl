@@ -14,9 +14,9 @@ async function main() {
     });
     await api.isReady;
     var apiAt = await api.at(blockHash)
-    var erasTotalStakes = await apiAt.query.staking.erasTotalStake(eraNumber-1);
-    var erasValidatorReward = await apiAt.query.staking.erasValidatorReward(eraNumber-2); // 4 hours delay
-    var erasRewardPoints = await apiAt.query.staking.erasRewardPoints(eraNumber-1);
+    var erasTotalStakes = await apiAt.query.staking.erasTotalStake(eraNumber - 1);
+    var erasValidatorReward = await apiAt.query.staking.erasValidatorReward(eraNumber - 2); // 4 hours delay
+    var erasRewardPoints = await apiAt.query.staking.erasRewardPoints(eraNumber - 1);
 
 
     //nominationPools.bondedPools
@@ -28,6 +28,8 @@ async function main() {
     var rewardPools = await apiAt.query.nominationPools.rewardPools.entries(); //
     var reversePoolIdLookup = await apiAt.query.nominationPools.reversePoolIdLookup.entries();
     var poolMember = await apiAt.query.nominationPools.poolMembers.entries(); // need pagination
+
+    var poolMetaData = await apiAt.query.nominationPools.metadata.entries();
 
     var totalStake = paraTool.dechexToInt(erasTotalStakes.toString()) / 10 ** 10
     var validatorReward = paraTool.dechexToInt(erasValidatorReward.toString()) / 10 ** 10

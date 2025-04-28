@@ -45,7 +45,7 @@ async function main() {
         .description(`Indexer maintenance`)
         .action(async (chainID, opt) => {
             var crawler = new Crawler();
-            await crawler.maintainIndexer();
+            await crawler.maintainIndexer(chainID);
             await crawler.release(5000);
             process.exit(0);
         })
@@ -82,10 +82,17 @@ async function main() {
                     }
                 } while (true);
             } else {
-                var crawler = new Crawler();
-                let chain = await crawler.getChain(chainID);
-                await crawler.indexChain(chain, 60, true, true);
-                await crawler.sleep(3 * 1000);
+                let runs = 0;
+                do {
+                    var crawler = new Crawler();
+                    let chain = await crawler.getChain(chainID);
+                    await crawler.indexChain(chain, 60, true, true);
+                    console.log("SLEEPING")
+                    runs++;
+                    await crawler.sleep(20 * 1000);
+                } while (runs < 5);
+                console.log("SLEEPING for 10 mins")
+                await crawler.sleep(600 * 1000);
                 process.exit(0);
             }
         })
@@ -193,7 +200,12 @@ async function main() {
                         bns.push(bn);
                     }
                 } else {
-                    bns = blockNumbers.split(",").map(x => parseInt(x, 10));
+                    if (blockNumbers == "fixes") {
+                        bns = await crawler.get_fixes(chainID);
+                        console.log(bns);
+                    } else {
+                        bns = blockNumbers.split(",").map(x => parseInt(x, 10));
+                    }
                 }
                 for (const bn of bns) {
                     if (force) {
@@ -207,7 +219,7 @@ async function main() {
                         crawlTraceEVM: 0,
                         crawlTrace: 1,
                     }
-                    let x = await crawler.crawl_block_trace(chain, t2)
+                    let x = await crawler.crawl_block(chain, t2)
                     let blockHash = x.blockHash;
                     console.log("blockHash: ", blockHash, bn);
                     await crawler.index_block(chain, bn, blockHash);
@@ -307,6 +319,21 @@ async function main() {
             var PriceManager = require("./priceManager");
             let manager = new PriceManager();
             await manager.updateCoinsList();
+            process.exit(0);
+        });
+
+    program.command('cgtraces')
+        .description(`Update Asset Prices from coingecko in traces`)
+        .option('-s, --startDT <startDT>', 'Start Date', null)
+        .option('-e, --endDT <endDT>', 'End Date', null)
+        .action(async (opt) => {
+            var PriceManager = require("./priceManager");
+            let manager = new PriceManager();
+            if (opt.startDT && opt.endDT) {
+                await manager.update_coingecko_backfill(opt.startDT, opt.endDT);
+            } else {
+                await manager.update_coingecko_today();
+            }
             process.exit(0);
         });
 

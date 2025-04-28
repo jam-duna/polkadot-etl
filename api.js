@@ -1,18 +1,18 @@
-// Copyright 2022 Colorful Notion, Inc.
-// This file is part of Polkaholic.
+// Copyright 2022-2025 Colorful Notion, Inc.
+// This file is part of polkadot-etl.
 
-// Polkaholic is free software: you can redistribute it and/or modify
+// polkadot-etl is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Polkaholic is distributed in the hope that it will be useful,
+// polkadot-etl is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Polkaholic.  If not, see <http://www.gnu.org/licenses/>.
+// along with polkadot-etl.  If not, see <http://www.gnu.org/licenses/>.
 
 const dotenv = require('dotenv').config();
 const express = require('express')
@@ -171,7 +171,6 @@ app.use(async (req, res, next) => {
     }
 })
 
-// Usage: http://api.polkaholic.io/
 app.get('/', async (req, res) => {
     try {
         let chains = await query.get_chains_external();
@@ -189,7 +188,6 @@ app.get('/', async (req, res) => {
     }
 })
 
-// Usage: http://api.polkaholic.io/chains
 app.get('/chains', async (req, res) => {
     try {
         let chains = await query.get_chains_external();
@@ -207,123 +205,53 @@ app.get('/chains', async (req, res) => {
     }
 })
 
-
-// Usage: http://api.polkaholic.io/xcmtransfers
-app.get('/xcmtransferslog/:chainID?/:chainIDDest?', async (req, res) => {
+app.get('/snapshot/:chainID?', async (req, res) => {
     try {
-        let chainID = req.params.chainID ? req.params.chainID : "all";
-        let chainIDDest = req.params.chainIDDest ? req.params.chainIDDest : "all";
-        let xcmtransferslog = await query.getXCMTransfersLog(chainID, chainIDDest);
-        if (xcmtransferslog) {
-            res.write(JSON.stringify(xcmtransferslog));
-            await query.tallyAPIKey(getapikey(req));
-            res.end();
-        } else {
-            res.sendStatus(404);
-        }
-    } catch (err) {
-        return res.status(400).json({
-            error: err.toString()
-        });
-    }
-})
-
-/*
-// Usage: http://api.polkaholic.io/xcmtransfers
-app.get('/substrate_xcmtransfers', async (req, res) => {
-    try {
-        let hardLimit = 50; // 100x [above this it takes too long] -- users should use date ranges to filter
-        let limit = (req.query.limit != undefined) ? parseInt(req.query.limit, 10) : 25;
-        if (limit > hardLimit) {
+        let chainID = req.params["chainID"]
+        if (chainID == undefined) {
             return res.status(400).json({
-                error: `Search: 'limit' parameter must be less or equal to than ${hardLimit}`
+                error: `chainID not set`
             });
         }
-
-        let [decorate, decorateExtra] = decorateOpt(req)
-        let filters = {
-            chainList: chainFilterOpt(req),
-            blockNumber: req.params["blockNumber"] ? req.params["blockNumber"] : null,
+        let [_currDT, currHR] = paraTool.ts_to_logDT_hr(paraTool.getCurrentDayTS() - 3600)
+        let [logTS, logYYYYMMDD, currDT, prevDT] = paraTool.getTimeFormat(_currDT)
+        let opt = {
+            chainID: chainID,
+            logDT: currDT,
+            startHR: 0,
+            finalHR: 23,
         };
-        if (req.query.symbol) {
-            filters.symbol = req.query.symbol;
+        if (req.query.logDT != undefined) {
+            opt.logDT = req.query.logDT;
         }
-        if (req.query.xcmType) {
-            filters.xcmType = req.query.xcmType;
+        if (req.query.startHR != undefined) {
+            opt.startHR = req.query.startHR;
         }
-        if (req.query.startTS) {
-            filters.startTS = req.query.startTS;
+        if (req.query.finalHR != undefined) {
+            opt.finalHR = req.query.finalHR;
         }
-        if (req.query.endTS) {
-            filters.endTS = req.query.endTS;
-        }
-        let xcmtransfers = await query.getXCMTransfers(filters, limit, decorate, decorateExtra);
-        if (xcmtransfers) {
-            res.write(JSON.stringify(xcmtransfers));
-            await query.tallyAPIKey(getapikey(req));
+        let periods = await query.getSnapshotBlocks(chainID, opt);
+        if (periods) {
+            res.write(JSON.stringify(periods));
             res.end();
         } else {
-            res.sendStatus(404);
-        }
-    } catch (err) {
-        return res.status(400).json({
-            error: err.toString()
-        });
-    }
-})
-*/
-
-// Usage: http://api.polkaholic.io/xcmmessages
-/*
-app.get('/substrate_xcmmessages', async (req, res) => {
-    try {
-        let hardLimit = 50;
-        let limit = (req.query.limit != undefined) ? parseInt(req.query.limit, 10) : 25;
-        if (limit > hardLimit) {
             return res.status(400).json({
-                error: `Search: 'limit' parameter must be less or equal to than ${hardLimit}`
+                error: `Snapshot blocks not ready for ${chainID}`
             });
         }
-        let [decorate, decorateExtra] = decorateOpt(req)
-        let filters = {
-            chainList: chainFilterOpt(req),
-            blockNumber: req.params["blockNumber"] ? req.params["blockNumber"] : null,
-        };
-        try {
-            if (req.query.chainID != undefined) {
-                filters.chainID = req.query.chainID;
-            }
-            if (req.query.chainIDDest != undefined) {
-                filters.chainIDDest = req.query.chainIDDest;
-            }
-        } catch (e) {
-            console.log(e)
-        }
-        let xcmmessages = await query.getRecentXCMMessages(filters, limit, decorate, decorateExtra);
-        if (xcmmessages) {
-            res.write(JSON.stringify(xcmmessages));
-            await query.tallyAPIKey(getapikey(req));
-            res.end();
-        } else {
-            res.sendStatus(404);
-        }
     } catch (err) {
         return res.status(400).json({
             error: err.toString()
         });
     }
 })
-*/
 
-// Usage: http://api.polkaholic.io/addresstopn
-app.get('/addresstopn/:topN', async (req, res) => {
+app.get('/assethubpools', async (req, res) => {
     try {
-        let topN = req.params["topN"]
-        let [decorate, decorateExtra] = decorateOpt(req)
-        let addresstopn = await query.getAddressTopN(topN, decorate, decorateExtra);
-        if (addresstopn) {
-            res.write(JSON.stringify(addresstopn));
-            await query.tallyAPIKey(getapikey(req));
+        let assets = [];
+        let pools = await query.getAssethubPools(assets);
+        if (pools) {
+            res.write(JSON.stringify(pools));
             res.end();
         } else {
             res.sendStatus(404);
@@ -335,7 +263,33 @@ app.get('/addresstopn/:topN', async (req, res) => {
     }
 })
 
-// Usage: https://api.polkaholic.io/contract/:asset/:chainID
+app.get('/assethublog/:asset/:against?/:timeframe?', async (req, res) => {
+    try {
+        let asset = (req.params.asset != undefined) ? req.params.asset : "DOT"; // DED, PINK, USDC, USDT
+        let against = (req.params.against != undefined) ? req.params.against : "USD"; // DOT, USD
+        let timeframe = (req.params.timeframe != undefined) ? req.params.timeframe : "week"; // month, all
+        if (!["day", "week", "month"].includes(timeframe)) {
+            res.sendStatus(400, "Invalid timeframe");
+        } else if (!["USD", "DOT"].includes(against)) {
+            res.sendStatus(400, "Invalid tokenB");
+        } else if (!["DED", "PINK", "DOT", "WETH.e", "MYTH"].includes(asset)) {
+            res.sendStatus(400, "Invalid tokenA");
+        } else {
+            let assethublog = await query.getAssethubLog(asset, against, timeframe);
+            if (assethublog) {
+                res.write(JSON.stringify(assethublog));
+                res.end();
+            } else {
+                res.sendStatus(404);
+            }
+        }
+    } catch (err) {
+        return res.status(400).json({
+            error: err.toString()
+        });
+    }
+})
+
 app.get('/contract/:asset/:chainID_or_chainName?', async (req, res) => {
     try {
         let asset = req.params["asset"]
@@ -355,7 +309,6 @@ app.get('/contract/:asset/:chainID_or_chainName?', async (req, res) => {
     }
 })
 
-// Usage: https://api.polkaholic.io/code/shiden
 app.get('/wasmcode/:chainID_or_chainName', async (req, res) => {
     try {
         let chainID_or_chainName = req.params["chainID_or_chainName"]
@@ -374,8 +327,6 @@ app.get('/wasmcode/:chainID_or_chainName', async (req, res) => {
     }
 })
 
-
-// Usage: https://api.polkaholic.io/contracts/shiden
 app.get('/wasmcontracts/:chainID_or_chainName', async (req, res) => {
     try {
         let chainID_or_chainName = req.params["chainID_or_chainName"]
@@ -394,7 +345,6 @@ app.get('/wasmcontracts/:chainID_or_chainName', async (req, res) => {
     }
 })
 
-// Usage: https://api.polkaholic.io/wasmcontract/XRcGZzdH841dHySiM62BfJDbQfXXYex3U7LYooRJt8EgJeX
 app.get('/wasmcontract/:chainID_or_chainName/:contractAddress', async (req, res) => {
     try {
         let contractAddress = req.params["contractAddress"] ? req.params["contractAddress"] : null;
@@ -435,6 +385,32 @@ app.get('/info/:network/:codeHash?', async (req, res) => {
     }
 })
 
+app.get('/amlcheck/:address/:appkey?', async (req, res) => {
+    try {
+        let address = req.params["address"]
+        let appkey = req.params["appkey"] ? req.params["appkey"] : ""
+        let ip = req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+        console.log(ip, "headers", req.headers, "remoteAddress", req.connection.remoteAddress);
+        let result = await query.storeAMLCheck(address, appkey, ip)
+        if (result.ok) {
+            res.write(JSON.stringify({
+                ok: true
+            }));
+            await query.tallyAPIKey(getapikey(req));
+            res.end();
+        } else {
+            return res.status(400).json({
+                ok: false
+            });
+        }
+    } catch (err) {
+        return res.status(400).json({
+            error: err.toString()
+        });
+    }
+})
+
+
 const upload = multer({
     dest: '/tmp/'
 });
@@ -464,8 +440,8 @@ app.post('/verify/:network/:codeHash', upload.single('package'), async (req, res
     }
 })
 
-// Usage: https://api.polkaholic.io/specversions/polkadot
 app.get('/specversions/:chainID_or_chainName', async (req, res) => {
+    return (false);
     try {
 
         let chainID_or_chainName = req.params["chainID_or_chainName"]
@@ -484,9 +460,8 @@ app.get('/specversions/:chainID_or_chainName', async (req, res) => {
     }
 })
 
-
-// Usage: https://api.polkaholic.io/chainlog/acala
 app.get('/chainlog/:chainID_or_chainName', async (req, res) => {
+    return (false);
     try {
         let hardLimit = 1000;
         let queryLimit = (req.query.limit != undefined) ? parseInt(req.query.limit, 10) : 100;
@@ -511,8 +486,8 @@ app.get('/chainlog/:chainID_or_chainName', async (req, res) => {
     }
 })
 
-// Usage: https://api.polkaholic.io/specversion/polkadot/100
 app.get('/specversion/:chainID_or_chainName/:specVersion', async (req, res) => {
+    return (false);
     try {
         let chainID_or_chainName = req.params["chainID_or_chainName"]
         let specVersion = req.params["specVersion"]
@@ -531,8 +506,8 @@ app.get('/specversion/:chainID_or_chainName/:specVersion', async (req, res) => {
     }
 })
 
-// Usage: http://api.polkaholic.io/chain/22000
 app.get('/chain/:chainID_or_chainName', async (req, res) => {
+    return (false);
     try {
         //let chainID = parseInt(req.params["chainID"], 10);
         let chainID_or_chainName = req.params["chainID_or_chainName"]
@@ -558,10 +533,8 @@ app.get('/chain/:chainID_or_chainName', async (req, res) => {
     }
 })
 
-// Usage: https://api.polkaholic.io/chain/tokens/2004
-// Usage: https://api.polkaholic.io/chain/routers/2004
-// Usage: https://api.polkaholic.io/chain/pools/2004
 app.get('/chain/:assetType/:chainID_or_chainName?', async (req, res) => {
+    return (false);
     try {
         let chainID_or_chainName = req.params["chainID_or_chainName"] ? req.params["chainID_or_chainName"] : null
         let assetType = req.params["assetType"];
@@ -596,189 +569,8 @@ app.get('/chain/:assetType/:chainID_or_chainName?', async (req, res) => {
     }
 })
 
-// Usage: https://api.polkaholic.io/pools/router/0x70085a09d30d6f8c4ecf6ee10120d1847383bb57~2004
-app.get('/pools/:assetType/:routerAssetChain', async (req, res) => {
-    try {
-        let routerAssetChain = req.params["routerAssetChain"] ? req.params["routerAssetChain"] : null
-        let assetType = req.params["assetType"];
-        let pools = null;
-        if (assetType == "router") {
-            pools = await query.getPools({
-                routerAssetChain
-            });
-        } else if (assetType == "chain" && routerAssetChain) {
-            pools = await query.getPools({
-                chainfilters: routerAssetChain
-            });
-        } else if (assetType == "symbol" && routerAssetChain) {
-            pools = await query.getPools({
-                symbol: routerAssetChain
-            });
-        } else if (assetType == "assetChain" && routerAssetChain) {
-            pools = await query.getPools({
-                assetChain: routerAssetChain
-            });
-        } else {
-            pools = await query.getPools({});
-        }
-        if (pools) {
-            res.write(JSON.stringify(pools));
-            await query.tallyAPIKey(getapikey(req));
-            res.end();
-        } else {
-            res.sendStatus(404);
-        }
-    } catch (err) {
-        return res.status(400).json({
-            error: err.toString()
-        });
-    }
-})
-
-app.get('/xcmassetlog/:chainID/:chainIDDest/:symbol?', async (req, res) => {
-    try {
-        let chainID = req.params["chainID"];
-        let chainIDDest = req.params["chainIDDest"];
-        let symbol = req.params["symbol"] ? req.params["symbol"] : "";
-        let xcmassetlog = await query.getChannelXCMAssetlog(chainID, chainIDDest, symbol);
-        if (xcmassetlog) {
-            res.write(JSON.stringify(xcmassetlog));
-            await query.tallyAPIKey(getapikey(req));
-            res.end();
-        } else {
-            res.sendStatus(404);
-        }
-    } catch (err) {
-        return res.status(400).json({
-            error: err.toString()
-        });
-    }
-})
-
-// Usage: https://api.polkaholic.io/asset/pricefeed/DOT/polkadot
-app.get('/asset/pricelog/:asset/:chainID/:routerAssetChain?', async (req, res) => {
-    try {
-        let asset = req.params["asset"];
-        let chainID = req.params["chainID"];
-        let q = {
-            asset,
-            chainID
-        };
-        if (req.params["routerAssetChain"]) {
-            q.routerAssetChain = req.params["routerAssetChain"];
-        }
-        let balances = await query.getAssetPriceFeed(q);
-        res.write(JSON.stringify(balances));
-        await query.tallyAPIKey(getapikey(req));
-        res.end();
-    } catch (err) {
-        return res.status(400).json({
-            error: err.toString()
-        });
-    }
-})
-
-// Usage: https://api.polkaholic.io/asset/pricefeed/DOT/polkadot
-app.get('/asset/pricefeed/:symbol/:relayChain/:routerAssetChain?', async (req, res) => {
-    try {
-        let symbol = req.params["symbol"];
-        let relayChain = req.params["relayChain"];
-        let q = {
-            symbol,
-            relayChain
-        };
-        if (req.params["routerAssetChain"]) {
-            q.routerAssetChain = req.params["routerAssetChain"];
-        }
-        let balances = await query.getAssetPriceFeed(q);
-        res.write(JSON.stringify(balances));
-        await query.tallyAPIKey(getapikey(req));
-        res.end();
-    } catch (err) {
-        return res.status(400).json({
-            error: err.toString()
-        });
-    }
-})
-
-// Usage: https://api.polkaholic.io/asset/holders/0x89f52002e544585b42f8c7cf557609ca4c8ce12a%231285
-app.get('/asset/holders/:chainID/:asset', async (req, res) => {
-    try {
-        let asset = req.params["asset"];
-        let chainID = req.params["chainID"];
-        let holders = await query.getAssetHolders(chainID, asset);
-        if (holders) {
-            res.write(JSON.stringify(holders));
-            await query.tallyAPIKey(getapikey(req));
-            return res.end();
-        } else {
-            return res.sendStatus(404).json();
-        }
-    } catch (err) {
-        return res.status(400).json({
-            error: err.toString()
-        });
-    }
-})
-
-// Usage: https://api.polkaholic.io/asset/related
-app.get('/asset/related/:chainID/:asset', async (req, res) => {
-    try {
-        let chainID = req.params["chainID"];
-        let asset = req.params["asset"];
-        let assetsRelated = await query.getAssetsRelated(chainID, asset);
-        if (assetsRelated) {
-            res.write(JSON.stringify(assetsRelated));
-            await query.tallyAPIKey(getapikey(req));
-            return res.end();
-        } else {
-            return res.sendStatus(404).json();
-        }
-    } catch (err) {
-        return res.status(400).json({
-            error: err.toString()
-        });
-    }
-})
-
-app.get('/hash/:hash', async (req, res) => {
-    try {
-        let h = req.params['hash'];
-        let hashrec = await query.lookupHash(h);
-        if (hashrec) {
-            if ((hashrec.status != undefined) && (hashrec.status == "unfinalized") && (hashrec.blockNumber != undefined) && (hashrec.chainID != undefined)) {
-                let chainID = hashrec.chainID;
-                let chain = await query.getChain(chainID);
-                if (chain.blocksFinalized >= hashrec.blockNumber) {
-                    let blockHashFinalized = await query.getBlockHashFinalized(chainID, hashrec.blockNumber);
-                    if (blockHashFinalized) {
-                        hashrec.blockHashFinalized = blockHashFinalized;
-                    }
-                }
-            }
-            res.write(JSON.stringify(hashrec));
-            await query.tallyAPIKey(getapikey(req));
-            res.end();
-        } else {
-            res.sendStatus(404);
-        }
-    } catch (err) {
-        return res.status(400).json({
-            error: err.toString()
-        });
-    }
-})
-
-app.post('/suggest/:address', async (req, res) => {
-    let address = req.params["address"];
-    let nickname = req.body.nickname;
-    let addressType = req.body.addressType;
-    let submitter = req.body.submitter;
-    let result = query.submitAddressSuggestion(address, nickname, submitter, addressType);
-    res.write(JSON.stringify(result));
-})
-
 app.get('/q/:q', async (req, res) => {
+    return (false);
     try {
         let search = req.params["q"].trim();
         let results = await query.getSearchResults(search);
@@ -791,25 +583,8 @@ app.get('/q/:q', async (req, res) => {
     }
 })
 
-app.get('/xcm/multilocation/:chainID_or_chainName', async (req, res) => {
-    try {
-        let results = {
-            "redirect_url": "https://github.com/colorfulnotion/xcm-global-registry",
-            "description": "Replaced by XCM Global Registry"
-        };
-        res.write(JSON.stringify(results));
-        res.end();
-    } catch (err) {
-        return res.status(400).json({
-            error: err.toString()
-        });
-    }
-})
-
-
-// Usage: http://api.polkaholic.io/block/8/1000000
-// Usage: http://api.polkaholic.io/block/8/1000000?blockhash=0x1234
 app.get('/block/:chainID_or_chainName/:blockNumber', async (req, res) => {
+    return (false);
     try {
         //let chain = await query.getChain(chainID);
         let chainID_or_chainName = req.params["chainID_or_chainName"]
@@ -833,29 +608,8 @@ app.get('/block/:chainID_or_chainName/:blockNumber', async (req, res) => {
     }
 })
 
-app.get('/trace/:chainID_or_chainName/:blockNumber/:blockHash?', async (req, res) => {
-    try {
-        //let chain = await query.getChain(chainID);
-        let chainID_or_chainName = req.params["chainID_or_chainName"]
-        let blockNumber = parseInt(req.params["blockNumber"], 10);
-        let blockHash = (req.query.blockhash != undefined) ? req.query.blockhash : false
-        var trace = await query.getTrace(chainID_or_chainName, blockNumber, blockHash);
-        if (trace) {
-            res.write(JSON.stringify(trace));
-            await query.tallyAPIKey(getapikey(req));
-            return res.end();
-        } else {
-            return res.sendStatus(404).json();
-        }
-    } catch (err) {
-        console.log(`error:`, err.toString())
-        return res.status(400).json({
-            error: err.toString()
-        });
-    }
-})
-
 app.get('/hash/blockhash/:blockHash', async (req, res) => {
+    return false;
     try {
         let blockHash = req.params["blockHash"];
         let [decorate, decorateExtra] = decorateOpt(req)
@@ -876,6 +630,7 @@ app.get('/hash/blockhash/:blockHash', async (req, res) => {
 })
 
 app.get('/account/:address', async (req, res) => {
+    return false;
     try {
         let address = paraTool.getPubKey(req.params["address"]);
         let targetGroup = (req.query["group"] != undefined) ? req.query["group"].toLowerCase() : "realtime"
@@ -917,6 +672,7 @@ app.get('/account/:address', async (req, res) => {
 })
 
 app.get('/account/:accountGroup/:address', async (req, res) => {
+    return false;
     try {
         let address = req.params["address"];
         let accountGroup = req.params["accountGroup"];
@@ -956,6 +712,7 @@ app.get('/account/:accountGroup/:address', async (req, res) => {
 })
 
 async function txAPIRedirect(req, res) {
+    return false;
     try {
         let txHash = req.params['txhash'];
         let [decorate, decorateExtra] = decorateOpt(req)
@@ -978,29 +735,8 @@ async function txAPIRedirect(req, res) {
 app.get('/extrinsic/:txhash', async (req, res) => txAPIRedirect(req, res))
 app.get('/tx/:txhash', async (req, res) => txAPIRedirect(req, res))
 
-/*
-app.get('/substrate_xcmmessage/:msgHash/:sentAt?', async (req, res) => {
-    try {
-        let msgHash = req.params['msgHash'];
-        let sentAt = req.params['sentAt'] ? req.params['sentAt'] : null;
-        console.log(`api query.getXCMMessage (${msgHash}, ${sentAt})`)
-        let xcm = await query.getXCMMessage(msgHash, sentAt);
-        if (xcm) {
-            res.write(JSON.stringify(xcm));
-            await query.tallyAPIKey(getapikey(req));
-            res.end();
-        } else {
-            res.sendStatus(404);
-        }
-    } catch (err) {
-        return res.status(400).json({
-            error: err.toString()
-        });
-    }
-})
-*/
-
 app.get('/event/:eventID', async (req, res) => {
+    return (false);
     try {
         let eventID = req.params['eventID'];
         let ev = await query.getEvent(eventID);
@@ -1077,7 +813,7 @@ app.use(function(err, req, res, next) {
 const hostname = "::";
 if (isDevelopment) {
     app.listen(port, hostname, () => {
-        console.log(`Polkaholic listening on port ${hostname}:${port} preemptively`)
+        console.log(`Listening on port ${hostname}:${port} preemptively`)
     })
 }
 let x = query.init();
@@ -1087,7 +823,7 @@ Promise.all([x]).then(() => {
     console.log(`[${new Date().toLocaleString()}] query ready`)
     if (!isDevelopment) {
         app.listen(port, hostname, () => {
-            console.log(`Polkaholic listening on port ${hostname}:${port}`)
+            console.log(`Listening on port ${hostname}:${port}`)
         })
     }
     // reload chains/assets/specVersions regularly

@@ -263,7 +263,7 @@ module.exports = class XCMGARLoadManager extends AssetManager {
             let parsedAsset = {
                 Token: symbol
             }
-            if (chainID == paraTool.chainIDStatemine || chainID == paraTool.chainIDStatemint) {
+            if (chainID == paraTool.chainIDKusamaAssetHub || chainID == paraTool.chainIDPolkadotAssetHub) {
                 try {
                     console.log(`xcmV1Standardized`, xcmV1Standardized)
                     let assetID = xcmV1Standardized[3]['generalIndex']

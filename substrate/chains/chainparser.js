@@ -975,13 +975,19 @@ module.exports = class ChainParser {
         let section_method = `${module_section}:${module_method}`
         //let outgoingXcmList = [];
         if (args.calls != undefined) { // this is an array
-            //console.log(`[${extrinsic.extrinsicID}] descend into calls`, args.calls.length)
+            //console.log(`[${extrinsic.extrinsicID}] descend into calls callLen=${args.calls.length}`)
             let i = 0;
             for (const c of args.calls) {
                 let call_section = c.section;
                 let call_method = c.method;
                 let c_args = c.args
-                //console.log(`[${extrinsic.extrinsicID}] call`, i, call_section, call_method, c);
+                if (c.call != undefined) {
+                    //go one level deep into struct by removing call
+                    call_section = c.call.section
+                    call_method = c.call.method
+                    c_args = c.call.args
+                }
+                //console.log(`[${extrinsic.extrinsicID}] call=${i}, call_section_method=(${call_section}:${call_method}) c=`, c);
                 i++;
                 this.processOutgoingXCM(indexer, extrinsic, feed, fromAddress, call_section, call_method, c_args)
             }
@@ -2846,7 +2852,7 @@ module.exports = class ChainParser {
                         }
                         v1_id_concrete_interiorVal = new_v1_id_concrete_interiorVal
                         let interiorVStr0 = JSON.stringify(v1_id_concrete_interiorVal)
-                        if ([paraTool.chainIDStatemine, paraTool.chainIDStatemint].includes(chainID)) {
+                        if ([paraTool.chainIDKusamaAssetHub, paraTool.chainIDPolkadotAssetHub].includes(chainID)) {
                             if (interiorVStr0.includes("generalIndex") && !interiorVStr0.includes("palletInstance")) {
                                 //Pad palletInstance for RMRK/USDT
                                 let padded_interiorV0 = [expandedParachainPiece, {
@@ -2951,7 +2957,7 @@ module.exports = class ChainParser {
                             new_interiorV0.push(expandedParachainPiece)
                             new_interiorV0.push(interiorV0)
                             interiorVStr = JSON.stringify(new_interiorV0)
-                            if ((chainID == paraTool.chainIDStatemine || chainID == paraTool.chainIDStatemint)) {
+                            if ((chainID == paraTool.chainIDKusamaAssetHub || chainID == paraTool.chainIDPolkadotAssetHub)) {
                                 // pad palletInstance
                                 if (interiorVStr.includes("generalIndex") && !interiorVStr.includes("palletInstance")) {
                                     console.log(`pad!! original`, new_interiorV0)
@@ -2985,7 +2991,7 @@ module.exports = class ChainParser {
                                 new_interiorV0.push(interiorV0Piece)
                             }
                             interiorVStr = JSON.stringify(new_interiorV0)
-                            if ((chainID == paraTool.chainIDStatemine || chainID == paraTool.chainIDStatemint)) {
+                            if ((chainID == paraTool.chainIDKusamaAssetHub || chainID == paraTool.chainIDPolkadotAssetHub)) {
                                 // pad palletInstance
                                 if (interiorVStr.includes("generalIndex") && !interiorVStr.includes("palletInstance")) {
                                     //console.log(`pad!! original`, new_interiorV0)
@@ -5148,7 +5154,9 @@ module.exports = class ChainParser {
             case paraTool.chainIDBasilisk:
             case paraTool.chainIDHydraDX:
                 //console.log(`fetch assetRegistry:assetMetadataMap`)
-                a = await indexer.api.query.assetRegistry.assetMetadataMap.entries()
+                try {
+                    a = await indexer.api.query.assetRegistry.assets.entries()
+                } catch (err) {}
                 break;
             default:
                 //console.log(`fetch asset:metadata`)
@@ -5168,6 +5176,7 @@ module.exports = class ChainParser {
             let parsedAsset = {
                 Token: assetID
             }
+
             // blacklist
             if ([paraTool.chainIDBasilisk, paraTool.chainIDListen].includes(chainID)) {
                 //skipping BSX / LT
@@ -5228,7 +5237,11 @@ module.exports = class ChainParser {
         switch (chainID) {
             default:
                 //console.log(`fetch localAssets:metadata`)
-                a = await indexer.api.query.localAssets.metadata.entries()
+                try {
+                    a = await indexer.api.query.localAssets.metadata.entries()
+                } catch (e) {
+
+                }
                 break;
         }
         if (!a) {

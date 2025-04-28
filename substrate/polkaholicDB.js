@@ -1,20 +1,24 @@
-// Copyright 2022 Colorful Notion, Inc.
-// This file is part of Polkaholic.
+// Copyright 2022-2025 Colorful Notion, Inc.
+// This file is part of polkadot-etl.
 
-// Polkaholic is free software: you can redistribute it and/or modify
+// polkadot-etl is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Polkaholic is distributed in the hope that it will be useful,
+// polkadot-etl is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Polkaholic.  If not, see <http://www.gnu.org/licenses/>.
+// along with polkadot-etl.  If not, see <http://www.gnu.org/licenses/>.
 
 const ini = require('node-ini');
+
+const {
+    keccakAsU8a
+} = require('@polkadot/util-crypto');
 
 const {
     Bigtable
@@ -664,15 +668,6 @@ module.exports = class PolkaholicDB {
         return res
     }
 
-    async updateEraBlock(chainID = paraTool.chainIDPolkadot) {
-        if (chainID == paraTool.chainIDPolkadot) {
-            let sql = `INSERT IGNORE INTO era${chainID} (era, blockDT, block_number, blockTS, blockhash) SELECT CEILING(UNIX_TIMESTAMP(blockDT) / 86400) - 18415 AS era, blockDT, blocknumber, UNIX_TIMESTAMP(blockDT) AS blockTS, blockhash FROM block0 WHERE (isERA = TRUE or MOD(UNIX_TIMESTAMP(blockDT), 86400) = 41778) AND CEILING(UNIX_TIMESTAMP(blockDT) / 86400) - 18415 > 1200 order by blockDT desc limit 10;`
-            this.batchedSQL.push(sql);
-            console.log(sql)
-            await this.update_batchedSQL();
-        }
-    }
-
     async getEraBlocks(chainID = paraTool.chainIDPolkadot) {
         //let eraBlocks = await this.poolREADONLY.query(`SELECT era, block_number, DATE_FORMAT(blockDT, '%Y-%m-%d') AS blockDT, blockTS, blockhash from era${chainID} order by era`)
         let eraBlocks = await this.poolREADONLY.query(`SELECT e1.era, e1.block_number, DATE_FORMAT(e1.blockDT, '%Y-%m-%d') AS blockDT, e1.blockTS, e1.blockhash AS blockhash, e2.blockhash AS era1Hash, e3.blockhash AS era2Hash FROM era${chainID} e1 LEFT JOIN era${chainID} e2 ON e1.era + 1 = e2.era LEFT JOIN era${chainID} e3 ON e1.era + 2 = e3.era ORDER BY e1.era;`)
@@ -1101,17 +1096,23 @@ from chain where chainID = '${chainID}' limit 1`);
             const typesDef = require("@kiltprotocol/type-definitions");
             api = await ApiPromise.create({
                 provider: provider,
-                types: typesDef.typeBundleForPolkadot.types
+                //types: typesDef.typeBundleForPolkadot.types
             });
             console.log(`You are connected to KILT chain ${chainID} endpoint=${endpoint} with types but not rpc`);
-        } else if ((chainID == paraTool.chainIDEncointer)) {
-            /*
-            const typesDef = require("@encointer/types")
+        } else if (chainID == 3367) {
+            const OverrideBundleDefinition = {
+                "spec": {
+                    "nexus": {
+                        "hasher": keccakAsU8a
+                    }
+                }
+            }
             api = await ApiPromise.create({
-                provider: provider,
-                types: typesDef.default.types
+                provider,
+                typesBundle: OverrideBundleDefinition,
             });
-            */
+            console.log(`You are connected to HYPERBRIDGE chain ${chainID} endpoint=${endpoint} with types`);
+        } else if ((chainID == paraTool.chainIDEncointer)) {
             const OverrideBundleDefinition = {
                 "spec": {
                     "encointer-parachain": {
@@ -1451,11 +1452,11 @@ from chain where chainID = '${chainID}' limit 1`);
             });
             console.log(`You are connected to MoonBase chain ${chainID} endpoint=${endpoint} with types + rpc`);
         } else if (chainID == paraTool.chainIDBifrostKSM || chainID == paraTool.chainIDBifrostDOT) {
-            const typeDefs = require("@bifrost-finance/type-definitions");
+            //const typeDefs = require("@bifrost-finance/type-definitions");
             api = await ApiPromise.create({
-                provider: provider,
-                typesBundle: typeDefs.typesBundleForPolkadot,
-                rpc: typeDefs.typesBundleForPolkadot.spec.bifrost.rpc
+                provider: provider
+                //typesBundle: typeDefs.typesBundleForPolkadot,
+                //rpc: typeDefs.typesBundleForPolkadot.spec.bifrost.rpc
             });
             console.log(`You are connected to BIFROST chain ${chainID} endpoint=${endpoint} with types + rpc`);
         } else if ((chainID == paraTool.chainIDParallel) || (chainID == paraTool.chainIDHeiko)) {
@@ -1466,24 +1467,15 @@ from chain where chainID = '${chainID}' limit 1`);
                 rpc: typeDefs.typesBundleForPolkadot.spec.parallel.rpc
             });
             console.log(`You are connected to PARALLEL chain ${chainID} endpoint=${endpoint} with types + rpc`);
-        } else if (chain.chainID == paraTool.chainIDAcala) {
-            const typeDefs = require("@acala-network/type-definitions");
+        } else if ((chain.chainID == paraTool.chainIDAcala) || (chain.chainID == paraTool.chainIDKarura)) {
+            //const typeDefs = require("@acala-network/type-definitions");
             api = await ApiPromise.create({
                 provider: provider,
-                typesBundle: typeDefs.typesBundleForPolkadot,
-                rpc: typeDefs.typesBundleForPolkadot.spec.acala.rpc,
-                signedExtensions: typeDefs.signedExtensions
+                //typesBundle: typeDefs.typesBundleForPolkadot,
+                //rpc: typeDefs.typesBundleForPolkadot.spec.acala.rpc,
+                //signedExtensions: typeDefs.signedExtensions
             });
             console.log(`You are connected to ACALA chain ${chainID} endpoint=${endpoint} with types + rpc + signedExt`);
-        } else if (chain.chainID == paraTool.chainIDKarura) {
-            const typeDefs = require("@acala-network/type-definitions");
-            api = await ApiPromise.create({
-                provider: provider,
-                typesBundle: typeDefs.typesBundleForPolkadot,
-                rpc: typeDefs.typesBundleForPolkadot.spec.karura.rpc,
-                signedExtensions: typeDefs.signedExtensions
-            });
-            console.log(`You are connected to KARURA chain ${chainID} endpoint=${endpoint} with types + rpc + signedExt`);
         } else {
             api = await ApiPromise.create({
                 provider: provider
@@ -1935,7 +1927,7 @@ from chain where chainID = '${chainID}' limit 1`);
         //MK: enable storing!
         //return;
         const bucketName = 'crypto_substrate_traces';
-        const storage = new Storage();
+        const storage = this.get_google_storage()
         const bucket = storage.bucket(bucketName);
         let relayChain = paraTool.getRelayChainByChainID(chainID)
         let paraID = paraTool.getParaIDfromChainID(chainID)
@@ -1958,7 +1950,7 @@ from chain where chainID = '${chainID}' limit 1`);
 
     async fetch_stateTraceBlock_gs(chainID, blockNumber) {
         const bucketName = 'crypto_substrate_traces';
-        const storage = new Storage();
+        const storage = this.get_google_storage()
         const bucket = storage.bucket(bucketName);
         let relayChain = paraTool.getRelayChainByChainID(chainID)
         let paraID = paraTool.getParaIDfromChainID(chainID)
@@ -1976,7 +1968,7 @@ from chain where chainID = '${chainID}' limit 1`);
         if (blocks.length == 1) {
             let b = blocks[0];
             let [logDT0, hr] = paraTool.ts_to_logDT_hr(b.blockTS);
-            const storage = new Storage();
+            const storage = this.get_google_storage();
             const bucketName = 'crypto_evm';
             const bucket = storage.bucket(bucketName);
             const fileName = this.gs_evm_file_name(chainID, logDT0, blockNumber);
@@ -1991,7 +1983,7 @@ from chain where chainID = '${chainID}' limit 1`);
 
 
     async fetch_substrate_block_gs(chainID, blockNumber) {
-        const storage = new Storage();
+        const storage = this.get_google_storage();
         const bucketName = 'crypto_substrate';
         const bucket = storage.bucket(bucketName);
         let relayChain = paraTool.getRelayChainByChainID(chainID)
@@ -2000,15 +1992,6 @@ from chain where chainID = '${chainID}' limit 1`);
         const file = bucket.file(fileName);
         const buffer = await file.download();
         const r = JSON.parse(buffer[0]);
-        let evm_chainID = null;
-        if (chainID == 2004) evm_chainID = 1284;
-        if (chainID == 2006) evm_chainID = 592;
-        if (evm_chainID) {
-            let x = fetch_evm_block_gs(evm_chainID, blockNumber);
-            if (x) {
-                r.evmBlock = x.block;
-            }
-        }
         return r;
     }
 
@@ -2022,6 +2005,40 @@ from chain where chainID = '${chainID}' limit 1`);
             console.log(e)
             return null;
         }
+    }
+
+    async getSnapshotBN(chainID, logDT, hrStart = 0, hrEnd = 23) {
+        let indexTSPeriodStart = paraTool.logDT_hr_to_ts(logDT, hrStart);
+        let indexTSPeriodEnd = paraTool.logDT_hr_to_ts(logDT, hrEnd);
+        var sql = `
+            SELECT
+                DATE_FORMAT(FROM_UNIXTIME(FLOOR(UNIX_TIMESTAMP(b0.blockDT)/3600)*3600), '%Y-%m-%d') AS snapshotDT,
+                HOUR(b0.blockDT) AS hr,
+                FLOOR(UNIX_TIMESTAMP(b0.blockDT)/3600)*3600 AS indexTS,
+                MIN(b0.blockNumber) AS startBN,
+                MAX(b0.blockNumber) AS endBN,
+                MIN(UNIX_TIMESTAMP(b0.blockDT)) AS startTS,
+                MAX(UNIX_TIMESTAMP(b0.blockDT)) AS endTS,
+                (SELECT blockHash FROM block${chainID} WHERE blockNumber = MIN(b0.blockNumber)) AS start_blockhash,
+                (SELECT blockHash FROM block${chainID} WHERE blockNumber = MAX(b0.blockNumber)) AS end_blockhash
+            FROM
+                block${chainID} b0
+            WHERE
+                b0.blockDT >= FROM_UNIXTIME(${indexTSPeriodStart})
+                AND b0.blockDT < FROM_UNIXTIME(${indexTSPeriodEnd} + 3600)
+                AND UNIX_TIMESTAMP() - (FLOOR(UNIX_TIMESTAMP(b0.blockDT)/3600)*3600) >= 3600
+            GROUP BY
+                indexTS, snapshotDT, hr
+            ORDER BY
+                indexTS;
+        `;
+        //sql = paraTool.formatSQL(sql)
+        //console.log(`indexPeriod sql=`, sql);
+        var periods = await this.poolREADONLY.query(sql);
+        if (periods.length > 0) {
+            return periods;
+        }
+        return false;
     }
 
     async fetch_block(chain, blockNumber, families = ["feed", "finalized"], feedOnly = false, blockHash = false) {

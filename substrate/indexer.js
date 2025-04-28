@@ -679,7 +679,7 @@ module.exports = class Indexer extends AssetManager {
         let updateFrequency = 100 // every 10min
         if (paraID == 0 && (isTip && bn % updateFrequency == 0)) {
             // updating every 10 mins
-            await this.flush_active_chains()
+            //await this.flush_active_chains()
         }
         await this.flushWSProviderQueue();
         let immediateFlushStartTS = new Date().getTime();
@@ -1132,8 +1132,8 @@ module.exports = class Indexer extends AssetManager {
                 let r = this.xcmtransfer[xcmtransferKeys[i]];
                 if (r.innerCall == undefined && (r.xcmSymbol && !this.validXcmAssetSymbol(r.xcmSymbol, r.chainID, "xcmtransfer", r))) {
                     console.log(`invalid asset`, r.xcmSymbol, r.chainID, "xcmtransfer", r)
-                } else if (r.chainIDDest == false || r.chainIDDest == null) {
-
+                } else if (r.chainIDDest === false || r.chainIDDest == null) {
+                    console.log("invalid chainIDDest", r.chainIDDest);
                 } else {
                     let innerCall = (r.innerCall) ? `'${r.innerCall}'` : `NULL`
 
@@ -1176,6 +1176,7 @@ module.exports = class Indexer extends AssetManager {
                         originationTxFee,
                         xcmInteriorKeyUnregistered
                     ].join(",") + ")";
+
                     // CHECK: do we need isXcmTipSafe = (isSigned || finalized) ? true : false concept here to ensure that xcmtransfer records are inserted only when "safe"
                     if (r.msgHash == "0x" && !r.finalized) {
                         //msgHash is missing... we will
@@ -3073,382 +3074,7 @@ module.exports = class Indexer extends AssetManager {
         return "state_traceBlock"
     }
 
-    async testParseTraces(chainID) {
-        let chain = await this.setupChainAndAPI(chainID);
-        let traces = await this.poolREADONLY.query(`select * from testParseTraces where chainID = '${chainID}' and pass is Null limit 10000`)
-        for (let i = 0; i < traces.length; i++) {
-            let e = traces[i];
-            await this.initApiAtStorageKeys(chain, e.blockHash, e.bn);
-            let traceType = await this.computeTraceType(chain, e.bn);
-            let [autotrace, _] = this.parse_trace_as_auto(e, traceType, traceIdx, e.bn, e.blockHash, chain.api);
-            let [o, parsev] = this.parse_trace_from_auto(autotrace, traceType, e.bn, e.blockHash, chain.api);
-            let sql = false;
-            if (o && parsev) {
-                sql = `update testParseTraces set pass = 1 where chainID = '${e.chainID}' and bn = '${e.bn}' and s = '${e.s}' and k = '${e.k}'`;
-            } else {
-                sql = `update testParseTraces set pass = 0 where chainID = '${e.chainID}' and bn = '${e.bn}' and s = '${e.s}' and k = '${e.k}'`;
-            }
-            console.log(sql);
-            this.batchedSQL.push(sql);
-        }
-        await this.update_batchedSQL();
-    }
 
-    // parse trace without any deep indexing
-    parse_trace_as_auto(e, traceType, traceIdx, bn, blockHash, api) {
-        let o = {}
-        //o.bn = bn;
-        //o.blockHash = blockHash;
-        //o.ts = e.ts; //not sure if we are still using this?
-        o.traceID = `${bn}-${traceIdx}`
-
-        let decodeFailed = false
-
-        let key = e.k.slice()
-        var query = api.query;
-
-        if (key.substr(0, 2) == "0x") key = key.substr(2)
-        let val = "0x"; // this is essential to cover "0" balance situations where e.v is null ... we cannot return otherwise we never zero out balances
-        if (e.v) {
-            val = e.v.slice()
-            if (val.substr(0, 2) == "0x") val = val.substr(2)
-        }
-        let k = key.slice();
-        if (k.length > 64) k = k.substr(0, 64);
-        let sk = this.storageKeys[k];
-
-        //if (!sk) decodeFailed = true;
-        //if (!sk) return ([false, false]);
-        if (!sk) {
-            o.p = 'unknown'
-            o.s = 'unknown'
-            o.k = e.k
-            o.v = e.v
-            return [o, false]
-        }
-
-        // add the palletName + storageName to the object, if found
-        o.p = sk.palletName;
-        o.s = sk.storageName;
-        if (!o.p || !o.s) {
-            console.log(`k=${k} not found (${key},${val})`)
-            decodeFailed = true
-            o.p = 'unknown'
-            o.s = 'unknown'
-            o.k = e.k
-            o.v = e.v
-            return [o, false]
-            //return ([false, false]);
-        }
-
-
-        let parsev = false;
-        let p = paraTool.firstCharLowerCase(o.p);
-        let s = paraTool.firstCharLowerCase(o.s);
-        let kk = ''
-        let vv = ''
-        let pk = ''
-        let pv = ''
-        let debugCode = 0
-        let palletSection = `${o.p}:${o.s}` //firstChar toUpperCase to match the testParseTraces tbl
-
-        try {
-            if (!query[p]) decodeFailed = true;
-            if (!query[p][s]) decodeFailed = true;
-            if (!query[p][s].meta) decodeFailed = true;
-        } catch (e) {
-            decodeFailed = true
-        }
-
-        if (decodeFailed) {
-            o.p = p
-            o.s = s
-            o.k = e.k
-            o.v = e.v
-            return [o, false]
-        }
-        //if (!query[p]) return ([false, false]);
-        //if (!query[p][s]) return ([false, false]);
-        //if (!query[p][s].meta) return ([false, false]);
-        let queryMeta = query[p][s].meta;
-        let handParseKey = false;
-        // parse key
-        try {
-            kk = key;
-
-            var skey = new StorageKey(api.registry, '0x' + key); // ???
-            skey.setMeta(api.query[p][s].meta); // ????
-            var parsek = skey.toHuman();
-            var decoratedKey = JSON.stringify(parsek)
-            pk = decoratedKey
-        } catch (err) {
-            o.pk = "err";
-            pk = "err"
-            this.numIndexingWarns++;
-        }
-
-        // parse value
-        try {
-            let valueType = (queryMeta.type.isMap) ? queryMeta.type.asMap.value.toJSON() : queryMeta.type.asPlain.toJSON();
-            let valueTypeDef = api.registry.metadata.lookup.getTypeDef(valueType).type;
-            let v = (val.length >= 2) ? val.substr(2).slice() : ""; // assume 01 "Some" prefix exists
-            if (valueTypeDef == "u128" || valueTypeDef == "u64" || valueTypeDef == "u32" || valueTypeDef == "u64" || valueTypeDef == "Balance") {
-                parsev = hexToBn(v, {
-                    isLe: true
-                }).toString();
-            } else {
-                switch (traceType) {
-                    case "state_traceBlock":
-                        if (api.createType != undefined) {
-                            parsev = api.createType(valueTypeDef, hexToU8a("0x" + v)).toString();
-                        } else if (api.registry != undefined && this.apiAt.registry.createType != undefined) {
-                            parsev = api.registry.createType(valueTypeDef, hexToU8a("0x" + v)).toString();
-                        }
-                        break;
-                    case "subscribeStorage":
-                    default: // skip over compact encoding bytes in Vec<u8>, see https://github.com/polkadot-js/api/issues/4445
-                        let b0 = parseInt(val.substr(0, 2), 16);
-                        switch (b0 & 3) {
-                            case 0: // single-byte mode: upper six bits are the LE encoding of the value
-                                let el0 = (b0 >> 2) & 63;
-                                if (el0 == (val.substr(2).length) / 2) {
-                                    if (api.createType != undefined) {
-                                        parsev = api.createType(valueTypeDef, hexToU8a("0x" + val.substr(2))).toString(); // 1 byte
-                                    } else if (api.registry != undefined && api.registry.createType != undefined) {
-                                        parsev = api.registry.createType(valueTypeDef, hexToU8a("0x" + val.substr(2))).toString(); // 1 byte
-                                    }
-                                } else {
-                                    // MYSTERY: why should this work?
-                                    // console.log("0 BYTE FAIL - el0", el0, "!=", (val.substr(2).length) / 2);
-                                    if (api.createType != undefined) {
-                                        parsev = api.createType(valueTypeDef, hexToU8a("0x" + val.substr(2))).toString();
-                                    } else if (api.registry != undefined && api.registry.createType != undefined) {
-                                        parsev = api.registry.createType(valueTypeDef, hexToU8a("0x" + val.substr(2))).toString();
-                                    }
-                                }
-                                break;
-                            case 1: // two-byte mode: upper six bits and the following byte is the LE encoding of the value
-                                var b1 = parseInt(val.substr(2, 2), 16);
-                                var el1 = ((b0 >> 2) & 63) + (b1 << 6);
-                                if (el1 == (val.substr(2).length - 2) / 2) {
-                                    if (api.createType != undefined) {
-                                        parsev = api.createType(valueTypeDef, hexToU8a("0x" + val.substr(4))).toString(); // 2 bytes
-                                    } else if (api.registry != undefined && api.registry.createType != undefined) {
-                                        parsev = api.registry.createType(valueTypeDef, hexToU8a("0x" + val.substr(4))).toString(); // 2 bytes
-                                    }
-                                } else {
-                                    // MYSTERY: why should this work?
-                                    // console.log("2 BYTE FAIL el1=", el1, "!=", (val.substr(2).length - 2) / 2, "b0", b0, "b1", b1, "len", (val.substr(2).length - 2) / 2, "val", val);
-                                    if (this.apiAt.createType != undefined) {
-                                        parsev = api.createType(valueTypeDef, "0x" + val.substr(2)).toString();
-                                    } else if (api.registry != undefined && api.registry.createType != undefined) {
-                                        parsev = api.registry.createType(valueTypeDef, "0x" + hexToU8a(val.substr(2))).toString();
-                                    }
-                                }
-                                break;
-                            case 2: // four-byte mode: upper six bits and the following three bytes are the LE encoding of the value
-                                /*var b1 = parseInt(val.substr(2, 2), 16);
-                                    var b2 = parseInt(val.substr(4, 2), 16);
-                                    var b3 = parseInt(val.substr(6, 2), 16);
-                                    var el2 = (b0 >> 2) & 63 + (b1 << 6) + (b2 << 14) + (b3 << 22);
-                                    if (el2 == (val.substr(2).length - 6) / 2) {
-                                        parsev = api.createType(valueTypeDef, "0x" + val.substr(8)).toString(); // 4 bytes
-                                    } else {
-                                        parsev = api.createType(valueTypeDef, "0x" + val.substr(2)).toString(); // assume 01 "Some" is the first byte
-                                    } */
-                                break;
-                            case 3: // Big-integer mode: The upper six bits are the number of bytes following, plus four.
-                                //let numBytes = ( b0 >> 2 ) & 63 + 4;
-                                //parsev = api.createType(valueTypeDef, "0x" + val.substr(2 + numBytes*2)).toString(); // check?
-                                break;
-                        }
-                }
-            }
-            vv = val;
-            if (parsev) {
-                pv = parsev;
-            }
-        } catch (err) {
-            //MK: temporary silent this. will revisit again
-            if (this.debugLevel >= paraTool.debugVerbose) console.log(`[${o.traceID}] SOURCE: pv`, traceType, k, val, err);
-            this.numIndexingWarns++;
-        }
-        let paddedK = (kk.substr(0, 2) == '0x') ? kk : '0x' + kk
-        let paddedV = (vv.substr(0, 2) == '0x') ? vv : '0x' + vv
-        if (JSON.stringify(paddedK) == pk) pk = ''
-        if (kk != '') o.k = paddedK
-        if (vv != '') o.v = paddedV
-        if (pk != '') o.pkExtra = pk
-        if (pv != '') o.pv = pv
-        //o.pv = (pv == undefined)? pv: null
-        //Need special treatments for `ParachainSystem:HrmpOutboundMessages, Dmp:DownwardMessageQueues, ParachainSystem:UpwardMessages`
-        this.chainParser.decorateAutoTraceXCM(this, o)
-        return [o, parsev];
-    }
-
-    // decorate the autoTraces with "deep indexing"
-    parse_trace_from_auto(e, traceType, bn, blockHash, api) {
-        //console.log(`e`, e)
-        let o = {}
-        o.bn = e.bn;
-        o.blockHash = e.blockHash;
-        // o.ts = e.ts; //not sure if we are still using this?
-
-        let key = e.k.slice()
-        var query = api.query;
-
-        if (key.substr(0, 2) == "0x") key = key.substr(2)
-        let val = "0x"; // this is essential to cover "0" balance situations where e.v is null ... we cannot return otherwise we never zero out balances
-        if (e.v) {
-            val = e.v.slice()
-            if (val.substr(0, 2) == "0x") val = val.substr(2)
-        }
-        let k = key.slice();
-        if (k.length > 64) k = k.substr(0, 64);
-        let sk = this.storageKeys[k];
-
-        if (!sk) return ([false, false]);
-        if (this.skipStorageKeys[k]) {
-            return ([false, false]);
-        }
-        // add the palletName + storageName to the object, if found
-        o.p = sk.palletName;
-        o.s = sk.storageName;
-        if (!o.p || !o.s) {
-            console.log(`k=${k} not found (${key},${val})`)
-            return ([false, false]);
-        }
-
-
-        let parsev = false;
-        let p = paraTool.firstCharLowerCase(o.p);
-        let s = paraTool.firstCharLowerCase(o.s);
-        let kk = ''
-        let vv = ''
-        let pk = ''
-        let pv = ''
-        let pv2 = ''
-        let debugCode = 0
-        let palletSection = `${o.p}:${o.s}` //firstChar toUpperCase to match the testParseTraces tbl
-
-        if (!query[p]) return ([false, false]);
-        if (!query[p][s]) return ([false, false]);
-        if (!query[p][s].meta) return ([false, false]);
-        let queryMeta = query[p][s].meta;
-        let handParseKey = false;
-        // parse key
-        try {
-            kk = key;
-            let parsek = (e.pkExtra != undefined) ? e.pkExtra : JSON.stringify(e.k)
-            var decoratedKey = parsek
-            //console.log(`parseStorageKey  key=${key}, decoratedKey=${decoratedKey}`)
-            if (handParseKey = this.chainParser.parseStorageKey(this, p, s, key, decoratedKey)) {
-                if (handParseKey.mpType) {
-                    //this is the dmp case
-                    if (handParseKey.mpType == 'dmp' && handParseKey.paraIDDest != undefined && handParseKey.chainIDDest != undefined) {
-                        o.paraIDDest = handParseKey.paraIDDest
-                        o.chainIDDest = handParseKey.chainIDDest
-                        o.mpType = handParseKey.mpType
-                    }
-                    if (handParseKey.mpType == 'ump') {
-                        o.mpType = handParseKey.mpType
-                        o.chainID = handParseKey.chainID
-                        o.chainIDDest = handParseKey.chainIDDest
-                    }
-                    if (handParseKey.mpType == 'hrmp') {
-                        o.mpType = handParseKey.mpType
-                        o.chainID = handParseKey.chainID
-                    }
-                }
-
-                if (handParseKey.lp0 != undefined && handParseKey.lp1 != undefined) {
-                    o.lp0 = handParseKey.lp0
-                    o.lp1 = handParseKey.lp1
-                }
-                if (handParseKey.decoratedAsset) {
-                    o.decoratedAsset = handParseKey.decoratedAsset
-                }
-                if (handParseKey.decimals != undefined) {
-                    o.decimals = handParseKey.decimals
-                }
-                if (handParseKey.symbol != undefined) {
-                    o.symbol = handParseKey.symbol
-                }
-                if (handParseKey.asset && handParseKey.asset.DexShare) {
-                    handParseKey.asset = handParseKey.asset.DexShare;
-                }
-                if (handParseKey.accountID != undefined && handParseKey.asset != undefined) {
-                    // this is usually a key by acct, assetType
-                    o.accountID = handParseKey.accountID
-                    o.asset = JSON.stringify(handParseKey.asset)
-                    //console.log("OK", o.accountID, o.asset);
-                    //kk = ''
-                } else if (handParseKey.accountID == undefined && handParseKey.asset != undefined) {
-                    // this is usally a key by assetType
-                    o.asset = JSON.stringify(handParseKey.asset)
-                } else {
-                    // unknowny for now
-                    pk = handParseKey;
-                }
-            } else {
-                if (parsek) {
-                    //kk = ''
-                    pk = JSON.stringify(parsek);
-                }
-            }
-        } catch (err) {
-            console.log(`parse_trace_from_auto error [${decoratedKey}]`, err.toString())
-            o.pk = "err";
-            pk = "err"
-            this.numIndexingWarns++;
-        }
-
-        // parse value
-        try {
-            vv = val;
-            parsev = e.pv
-
-            if (parsev) {
-                if (parsev.substr(0, 2) == "0x") {
-                    // can't do anything
-                    pv = parsev;
-                } else {
-                    let handParseVal = false;
-                    if (handParseVal = this.chainParser.parseStorageVal(this, p, s, val, parsev, o)) {
-                        if (handParseVal.extra != undefined) {
-                            //added any extra field here
-                            for (let f in handParseVal.extra) {
-                                o[f] = handParseVal.extra[f]
-                            }
-                        }
-                        //use the remaining as pv
-                        if (handParseVal.pv != "") pv = handParseVal.pv
-                        if (handParseVal.pv2 != "") pv2 = handParseVal.pv2 // load raw xcm here
-                    } else {
-                        try {
-                            //uncategorized type
-                            let parsedStruct = JSON.parse(parsev)
-                            pv = parsedStruct;
-                            debugCode = 2
-                        } catch {
-                            console.log(p, s, parsev);
-                        }
-                    }
-                }
-            }
-        } catch (err) {
-            console.log("SOURCE: pv", err);
-            this.numIndexingWarns++;
-        }
-        if (kk != '') o.k = kk
-        if (vv != '') o.v = vv
-        if (pk != '') o.pk = JSON.stringify(pk)
-        if (pv != '') o.pv = JSON.stringify(pv)
-        if (pv2 != '') o.pv2 = JSON.stringify(pv2)
-        if (debugCode > 0) o.debug = debugCode
-
-        return [o, parsev];
-    }
 
     getBeneficiaryFromMsgHash(msgHash) {
         let xcmKeys = Object.keys(this.xcmmsgMap)
@@ -3578,7 +3204,7 @@ module.exports = class Indexer extends AssetManager {
                 "vals": vals,
                 "data": rows,
                 "replace": vals
-            }, true);
+            });
             this.recentXcmMsgs = []
 
             /*
@@ -3781,8 +3407,8 @@ module.exports = class Indexer extends AssetManager {
             callIndex: callIndex,
             section: section,
             method: method,
-            argsDef: argsDef,
-            args: call_s.args
+            args: call_s.args,
+            argsDef: argsDef
         }
         return f
     }
@@ -3805,48 +3431,101 @@ module.exports = class Indexer extends AssetManager {
     }
 
     recursive_batch_all(call_s, apiAt, extrinsicHash, extrinsicID, lvl = '', remarks = {}, opaqueCalls = {}) {
+        //console.log(`lvl=${lvl}, opaqueCalls=${JSON.stringify(opaqueCalls, null, 4)}. call_s=${JSON.stringify(call_s, null, 4)}`)
         if (call_s && call_s.args.calls != undefined) {
             for (let i = 0; i < call_s.args.calls.length; i++) {
                 let callIndex = call_s.args.calls[i].callIndex
-                let [method, section, argsDef] = this.getMethodSection(callIndex, apiAt)
-                let ff = {
-                    callIndex: callIndex,
-                    section: section,
-                    method: method,
-                    args: call_s.args.calls[i].args,
-                    argsDef: argsDef
-                }
-                try {
-                    for (let k = 0; k < argsDef.length; k++) {
-                        let argsDef_k = argsDef[k]
-                        let argsDef_k_type = argsDef_k.type
-                        let argsDef_k_name = argsDef_k.name
-                        //console.log(`recursive_batch_all argsDef_k`, argsDef_k)
-                        //console.log(`recursive_batch_all argsDef_k_type`, argsDef_k_type)
-                        if (extrinsic_args_conversion_list.includes(argsDef_k_type)) {
-                            let arg_val = call_s.args.calls[i].args[argsDef_k_name]
-                            call_s.args.calls[i].args[argsDef_k_name] = paraTool.toIntegerStr(arg_val)
+                if (callIndex != undefined) {
+                    let [method, section, argsDef] = this.getMethodSection(callIndex, apiAt)
+                    let ff = {
+                        callIndex: callIndex,
+                        section: section,
+                        method: method,
+                        args: call_s.args.calls[i].args,
+                        argsDef: argsDef
+                    }
+
+                    try {
+                        for (let k = 0; k < argsDef.length; k++) {
+                            let argsDef_k = argsDef[k]
+                            let argsDef_k_type = argsDef_k.type
+                            let argsDef_k_name = argsDef_k.name
+                            //console.log(`AAAA recursive_batch_all argsDef_k`, argsDef_k)
+                            //console.log(`BBBB recursive_batch_all argsDef_k_type`, argsDef_k_type)
+                            if (extrinsic_args_conversion_list.includes(argsDef_k_type)) {
+                                let arg_val = call_s.args.calls[i].args[argsDef_k_name]
+                                call_s.args.calls[i].args[argsDef_k_name] = paraTool.toIntegerStr(arg_val)
+                            }
+                        }
+                    } catch (recursiveArgsDefErr) {
+                        console.log(`recursive_batch_all recursiveArgsDefErr`, recursiveArgsDefErr)
+                    }
+                    let pallet_method = `${ff.section}:${ff.method}`
+                    if (pallet_method == 'system:remarkWithEvent' || pallet_method == 'system:remark') {
+                        if (ff.args.remark != undefined) {
+                            remarks[ff.args.remark] = 1
                         }
                     }
-                } catch (recursiveArgsDefErr) {
-                    console.log(`recursive_batch_all recursiveArgsDefErr`, recursiveArgsDefErr)
-                }
-                let pallet_method = `${ff.section}:${ff.method}`
-                if (pallet_method == 'system:remarkWithEvent' || pallet_method == 'system:remark') {
-                    if (ff.args.remark != undefined) {
-                        remarks[ff.args.remark] = 1
+                    let o = `call ${lvl}-${i}`
+                    //console.log(`\t${o} - ${pallet_method}`)
+                    if (ff.args.call != undefined) {
+                        //recursively decode opaque call
+                        let s = " ".repeat()
+                        //console.log(`\t${" ".repeat(o.length+2)} - additional 'call' argument found`)
+                        this.decode_opaque_call(ff, apiAt, extrinsicHash, extrinsicID, `${lvl}-${i}`, remarks, opaqueCalls)
+                    }
+                    this.recursive_batch_all(ff, apiAt, extrinsicHash, extrinsicID, `${lvl}-${i}`, remarks, opaqueCalls)
+                    call_s.args.calls[i] = ff
+                } else {
+                    let callIndex = call_s.args.calls[i].call.callIndex
+                    if (callIndex != undefined) {
+                        //console.log(`!!!!! lvl=${lvl}. calls[${i}], ${JSON.stringify(call_s.args.calls[i], null, 4)}`)
+                        let [method, section, argsDef] = this.getMethodSection(callIndex, apiAt)
+                        let ff = {
+                            callIndex: callIndex,
+                            section: section,
+                            method: method,
+                            args: call_s.args.calls[i].call.args,
+                            argsDef: argsDef
+                        }
+
+                        try {
+                            for (let k = 0; k < argsDef.length; k++) {
+                                let argsDef_k = argsDef[k]
+                                let argsDef_k_type = argsDef_k.type
+                                let argsDef_k_name = argsDef_k.name
+                                //console.log(`AAAA recursive_batch_all argsDef_k`, argsDef_k)
+                                //console.log(`BBBB recursive_batch_all argsDef_k_type`, argsDef_k_type)
+                                if (extrinsic_args_conversion_list.includes(argsDef_k_type)) {
+                                    let arg_val = call_s.args.calls[i].call.args[argsDef_k_name]
+                                    call_s.args.calls[i].call.args[argsDef_k_name] = paraTool.toIntegerStr(arg_val)
+                                }
+                            }
+                        } catch (recursiveArgsDefErr) {
+                            console.log(`recursive_batch_all recursiveArgsDefErr`, recursiveArgsDefErr)
+                        }
+                        let pallet_method = `${ff.section}:${ff.method}`
+                        if (pallet_method == 'system:remarkWithEvent' || pallet_method == 'system:remark') {
+                            if (ff.args.remark != undefined) {
+                                remarks[ff.args.remark] = 1
+                            }
+                        }
+                        let o = `call ${lvl}-${i}`
+                        //console.log(`\t${o} - ${pallet_method}`)
+                        if (ff.args.call != undefined) {
+                            //recursively decode opaque call
+                            let s = " ".repeat()
+                            //console.log(`\t${" ".repeat(o.length+2)} - additional 'call' argument found`)
+                            this.decode_opaque_call(ff, apiAt, extrinsicHash, extrinsicID, `${lvl}-${i}`, remarks, opaqueCalls)
+                        }
+                        this.recursive_batch_all(ff, apiAt, extrinsicHash, extrinsicID, `${lvl}-${i}`, remarks, opaqueCalls)
+                        call_s.args.calls[i].call = ff
+                        //process.exit(1)
+                    } else {
+                        console.log(`callIndex still missing!!`)
+                        //process.exit(1)
                     }
                 }
-                //let o = `call ${lvl}-${i}`
-                //console.log(`\t${o} - ${pallet_method}`)
-                if (ff.args.call != undefined) {
-                    //recursively decode opaque call
-                    let s = " ".repeat()
-                    //console.log(`\t${" ".repeat(o.length+2)} - additional 'call' argument found`)
-                    this.decode_opaque_call(ff, apiAt, extrinsicHash, extrinsicID, `${lvl}-${i}`, remarks, opaqueCalls)
-                }
-                this.recursive_batch_all(ff, apiAt, extrinsicHash, extrinsicID, `${lvl}-${i}`, remarks, opaqueCalls)
-                call_s.args.calls[i] = ff
             }
             //console.log("recursive_batch_all done")
         } else {
@@ -3933,6 +3612,10 @@ module.exports = class Indexer extends AssetManager {
         let extrinsicHash = extrinsic.hash.toHex()
         let extrinsicID = (index == 'pending') ? `${extrinsicHash}-pending` : blockNumber + "-" + index
         let callIndex = exos.method.callIndex
+        if (callIndex == undefined) {
+            console.log(`!!!!exos.method callIndex undefined`, JSON.stringify(exos.method))
+        }
+        //console.log(`!!!exos.method`, exos.method)
         let [method, section, argsDef] = this.getMethodSection(callIndex, apiAt)
         let remarks = {} // add all remarks here
         let opaqueCalls = {}
@@ -4195,18 +3878,19 @@ module.exports = class Indexer extends AssetManager {
                         }
                     }
                 }
+
                 for (let i = 0; i < dataType.length; i++) {
                     let dataType_i = dataType[i]
                     let data_i = data[i]
                     //if (extrinsicHash == '0xd50a05196fcc5794b44b19502dcb4aaa573fea0a510120fb1966fdd5ad76f119') console.log('dataType_i', dataType_i, 'data_i', data_i)
                     if (dataType_i.typeDef != undefined && dataType_i.typeDef == 'Result<Null, SpRuntimeDispatchError>') {
                         // SpRuntimeDispatchError can potentially return "ok" - exclude this case
-                        if (!Object.keys(data_i).includes('ok')) {
+                        if (!Object.keys(data_i).includes('ok') && !isUnsignedHead) {
                             //error detected
                             res.success = 0
                             let dataErr = data_i.err
                             if (dataErr != undefined) {
-                                //console.log('error detected 1!!', res)
+                                //console.log('error detected 1!!', res, data_i, dataType_i, "dataErr", dataErr)
                                 if (dataErr.module != undefined) {
                                     //error module here
                                     res.err = this.getErrorDoc(dataErr.module, apiAt)
@@ -4226,6 +3910,7 @@ module.exports = class Indexer extends AssetManager {
                         } else if (!errorSet) {
                             res.success = 0
                             res.err = `Failed(Generic) ${JSON.stringify(data_i)}`
+                            //console.log('error detected 3!!', res)
                         }
                     }
                 }
@@ -4504,6 +4189,7 @@ module.exports = class Indexer extends AssetManager {
                 value: JSON.stringify(feed),
                 timestamp: 0 //this is nondeterministic
             };
+            console.log("length=", hashrec["tx"].value.length);
             this.stat.hashesRows.substrateTx++
             let extrinsicHashRec = {
                 key: extrinsicHash,
@@ -4689,7 +4375,7 @@ module.exports = class Indexer extends AssetManager {
         this.addressBalanceRequest = {}
     }
 
-    async process_extrinsic(api, extrinsicRaw, eventsRaw, block, index, finalized = false, isTip = false, tracesPresent = false) {
+    async process_extrinsic(api, extrinsicRaw, eventsRaw, block, index, finalized = false, isTip = false) {
         let blockNumber = block.header.number;
         let blockHash = block.hash;
         let blockTS = block.blockTS;
@@ -4702,6 +4388,7 @@ module.exports = class Indexer extends AssetManager {
         }
 
         let extrinsic = this.decode_s_extrinsic(extrinsicRaw, blockNumber, index, api);
+        //console.log(`MK!![${extrinsicID}] extrinsic=${JSON.stringify(extrinsic, null, 4)}`)
         if (!extrinsic.method) {
             // TODO: onInitialize, onFinalize
             return (extrinsic);
@@ -4965,8 +4652,6 @@ module.exports = class Indexer extends AssetManager {
                             rewardEvents.push(ev);
                         } else if (this.chainParser.crowdloanFilter(palletMethod)) {
                             crowdloanEvents.push(ev);
-                        } else if (isTip && tracesPresent && this.chainParser.reapingFilter(palletMethod)) {
-                            reapingEvents.push(ev);
                         }
                     })
 
@@ -5331,7 +5016,7 @@ module.exports = class Indexer extends AssetManager {
         return (block.blockTS);
     }
 
-    getBlockStats(block, events, unused0 = false, unused1 = false, autoTraces = false) {
+    getBlockStats(block, events, unused0 = false, unused1 = false) {
         let blockStats = {
             numExtrinsics: block.extrinsics.length,
             numSignedExtrinsics: 0,
@@ -5339,9 +5024,6 @@ module.exports = class Indexer extends AssetManager {
             numEvents: events.length,
             valueTransfersUSD: 0,
             fees: 0,
-        }
-        if (autoTraces && Array.isArray(autoTraces)) {
-            blockStats.numTraceRecords = autoTraces.length
         }
         block.extrinsics.forEach((extrinsic, index) => {
             if (this.isExtrinsicSigned(extrinsic)) blockStats.numSignedExtrinsics++;
@@ -5617,14 +5299,14 @@ module.exports = class Indexer extends AssetManager {
                     this.currentSessionIndex = currSessionIndex
                     if (this.debugLevel >= paraTool.debugInfo) console.log(`[${blockNumber}] update currentSession=${currSessionIndex}`)
                 } else if (api.query.session != undefined && api.query.session.currentIndex != undefined) {
-                    let currIndex = await api.query.session.currentIndex.at(blockHash)
+                    let currIndex = await api.query.session.currentIndex()
                     currSessionIndex = currIndex.toNumber()
                     this.currentSessionIndex = currSessionIndex
                     if (this.debugLevel >= paraTool.debugInfo) console.log(`*[${blockNumber}] update currentSession=${currSessionIndex}`)
                 } else {
                     return;
                 }
-                currSessionValidators = await api.query.session.validators.at(blockHash)
+                currSessionValidators = await api.query.session.validators()
                 currSessionValidators = currSessionValidators.toJSON()
                 this.currentSessionValidators = currSessionValidators
                 if (this.debugLevel >= paraTool.debugInfo) console.log(`*[${blockNumber}] update currentSessionValidators (${currSessionIndex}, len=${currSessionValidators.length})`)
@@ -5640,6 +5322,7 @@ module.exports = class Indexer extends AssetManager {
         let [author, authorPubkey] = paraTool.getAuthor(digest, currSessionValidators)
         if (this.debugLevel >= paraTool.debugTracing) console.log(`[${blockNumber}] ${blockHash}, author:${author}, authorPubkey:${authorPubkey}`)
         if (author != undefined) {
+            //console.log(`block author: ${author}`)
             block.author = author
         }
     }
@@ -5792,6 +5475,7 @@ module.exports = class Indexer extends AssetManager {
     }
 
     async bq_streaming_insert_finalized_block(b) {
+        return
         if (this.BQ_SUBSTRATEETL_KEY == null) return;
         const bigquery = this.get_big_query();
         let chainID = this.chainID
@@ -5991,9 +5675,10 @@ module.exports = class Indexer extends AssetManager {
                     if (this.suppress_call(id, call.section, call.method)) {} else {
                         let t = this.generate_call_rows(bqExtrinsicCall);
                         if (t) {
+                            /*
                             try {
                                 await bigquery
-                                    .dataset("substrate")
+                                    .dataset("substrate") // not sure what dataset is this?
                                     .table(t.tableName)
                                     .insert(t.rows, {
                                         raw: true
@@ -6011,6 +5696,7 @@ module.exports = class Indexer extends AssetManager {
                                     "err": err
                                 })
                             }
+                            */
                         }
 
                         calls.push({
@@ -6043,6 +5729,8 @@ module.exports = class Indexer extends AssetManager {
                     //console.log(`calls`, calls)
                     break;
             }
+            //Disable finalized stream inserts
+            /*
             if (rows && rows.length > 0) {
                 let dataset = `crypto_${relayChain}`
                 try {
@@ -6057,6 +5745,7 @@ module.exports = class Indexer extends AssetManager {
                     console.log(t, JSON.stringify(err));
                 }
             }
+            */
         }
     }
 
@@ -6101,26 +5790,30 @@ module.exports = class Indexer extends AssetManager {
                 console.log("process_rcxcm", err);
             }
         }
+        /*
+        //Disable xcm streaming insert
+        let bqDataset0 = `messaging`
+        let bqTable = `${relayChain}_xcm`
         try {
             const bigquery = this.get_big_query();
             await bigquery
-                .dataset(`messaging`)
-                .table(`${relayChain}_xcm`)
+                .dataset(bqDataset0)
+                .table(bqTable)
                 .insert(rows, {
                     raw: true
                 });
         } catch (err) {
             console.log("process_rcxcm STREAMING INSERT", err, JSON.stringify(err));
         }
+        */
         let vals = ["relayChain", "relayedBlockHash", "relayedAt", "includedAt", "msgType", "blockTS", "msgStr", "msgHex", "path", "version", "beneficiaries", "indexDT", "finalized", "xcmInteriorKeys", "xcmInteriorKeysUnregistered"]
-        let sqlDebug = true
         await this.upsertSQL({
             "table": "xcm",
             "keys": ["msgHash", "chainID", "chainIDDest", "sentAt"],
             "vals": vals,
             "data": out,
             "replace": vals
-        }, sqlDebug);
+        });
     }
 
     ParaInclusionPendingAvailabilityFilter(traces) {
@@ -6350,7 +6043,7 @@ module.exports = class Indexer extends AssetManager {
     }
 
 
-    async processBlockEvents(chainID, block, eventsRaw, unused0 = false, unused1 = false, unused2 = false, autoTraces = false, finalized = false, unused = false, isTip = false, tracesPresent = false) {
+    async processBlockEvents(chainID, block, eventsRaw, unused0 = false, unused1 = false, unused2 = false, api = false, finalized = false, unused = false, isTip = false) {
         //processExtrinsic + processBlockAndReceipt
         if (!block) return;
         if (!block.extrinsics) return;
@@ -6368,7 +6061,7 @@ module.exports = class Indexer extends AssetManager {
         this.chainParser.setParserContext(block.blockTS, blockNumber, blockHash, chainID);
         if (this.isRelayChain) this.chainParser.setRelayParentStateRoot(stateRoot)
         //console.log(`**** chainParserStat`, this.chainParser.getChainParserStat())
-        let api = this.apiAt; //processBlockEvents is sync func, so we must initialize apiAt before pass in?
+
         block.finalized = finalized;
 
         // (0.a) index events by extrinsicIndex
@@ -6378,7 +6071,7 @@ module.exports = class Indexer extends AssetManager {
         let [isNewSession, sessionIndex] = this.checkNewSession(eventsIndexed);
 
         // (0.c) derive/cache session validators - called once every ~ 2400 blocks
-        await this.getBlockAuthor(this.api, block, isNewSession, sessionIndex)
+        await this.getBlockAuthor(api, block, isNewSession, sessionIndex)
         if (block.author != undefined) {
             this.chainParser.setAuthor(block.author)
         } else {
@@ -6390,7 +6083,7 @@ module.exports = class Indexer extends AssetManager {
         let extrinsics = [];
         for (let index = 0; index < block.extrinsics.length; index++) {
             let extrinsicRaw = block.extrinsics[index];
-            let ext = await this.process_extrinsic(api, extrinsicRaw, eventsIndexed[index], block, index, finalized, isTip, tracesPresent);
+            let ext = await this.process_extrinsic(api, extrinsicRaw, eventsIndexed[index], block, index, finalized, isTip);
 
             if (ext) {
                 extrinsics.push(ext);
@@ -6414,7 +6107,7 @@ module.exports = class Indexer extends AssetManager {
                                     let tDecimals = (t.decimals != undefined && t.decimals > 0) ? `'${t.decimals}'` : 'Null';
                                     let tRawAsset = (t.rawAsset != undefined) ? `'${t.rawAsset}'` : 'Null';
                                     let tRawAmount = (t.rawAmount != undefined && t.rawAmount >= 0) ? `'${t.rawAmount}'` : 'Null';
-                                    if (isTip && (tracesPresent == false)) {
+                                    if (isTip) {
                                         // because traces are missing, we'll fill in gaps dynamically at the tip for the sender and the receiver
                                         this.flagAddressBalanceRequest(t.fromAddress);
                                         this.flagAddressBalanceRequest(t.toAddress);
@@ -6434,14 +6127,6 @@ module.exports = class Indexer extends AssetManager {
         this.timeStat.processExtrinsic += block.extrinsics.length
 
         let forceTry = true //MK: need to review this
-        if ((isTip || forceTry) && this.isRelayChain) {
-            let relayChain = paraTool.getRelayChainByChainID(chainID);
-
-            if (autoTraces) {
-                //console.log("this.indexRelayChainTrace SUCC", blockNumber, chainID, relayChain, autoTraces.length);
-                await this.indexRelayChainTrace(autoTraces, blockNumber, chainID, blockTS, relayChain, isTip, finalized, this.chainParser.getChainParserStat());
-            }
-        }
         let xcmMeta = []
         if (this.isRelayChain) {
             let xcmMetaInfo = this.xcmMetaMap[blockNumber]
@@ -6506,17 +6191,9 @@ module.exports = class Indexer extends AssetManager {
             }
         };
         cres['data']['feed'][blockHash] = {
-            value: JSON.stringify(block),
-            timestamp: blockTS * 1000000
+            value: JSON.stringify(block)
+            //timestamp: blockTS * 1000000
         };
-
-        // (2a) record autoTrace in BT chain${chainID} feed, if available
-        if (autoTraces) {
-            cres['data']['autotrace'][blockHash] = {
-                value: JSON.stringify(autoTraces),
-                timestamp: blockTS * 1000000
-            };
-        }
 
 
         let xcmKeys = Object.keys(this.xcmmsgMap)
@@ -6578,14 +6255,15 @@ module.exports = class Indexer extends AssetManager {
             await this.check_xcmtransfers_beneficiary(api, blockNumber, blockTS, finalized);
         }
 
-        let blockStats = this.getBlockStats(block, eventsRaw, null, null, autoTraces);
+        let blockStats = this.getBlockStats(block, eventsRaw, null, null, null);
 
         this.blockRowsToInsert.push(cres)
         if (recentXcmMsgs.length > 0) {
             this.add_recent_activity(recentXcmMsgs)
         }
         if (isTip && finalized) {
-            await this.bq_streaming_insert_finalized_block(block);
+            // Disable streaming insert for finalized ["extrinsics", "events", "transfers", "tokentransfers", "calls"]
+            //await this.bq_streaming_insert_finalized_block(block);
         }
         if (xcmMeta.length > 0) {
             if (this.debugLevel >= paraTool.debugInfo) console.log(`returning [${blockNumber}] [${blockHash}] xcmMeta!`, xcmMeta)
@@ -6970,289 +6648,6 @@ module.exports = class Indexer extends AssetManager {
         return (true);
     }
 
-    async processTraceAsAuto(blockTS, blockNumber, blockHash, chainID, trace, traceType, api, finalized = false) {
-        // setParserContext
-        this.chainParser.setParserContext(blockTS, blockNumber, blockHash, chainID)
-        let rawTraces = [];
-        if (!trace) return;
-        if (!Array.isArray(trace)) {
-            //console.log("prcessTrace", trace);
-            return;
-        }
-        // (s) dedup the events
-        let traceIdx = 0;
-        for (const t of trace) {
-            let [tRaw, _] = this.parse_trace_as_auto(t, traceType, traceIdx, blockNumber, blockHash, api);
-            rawTraces.push(tRaw)
-            traceIdx++
-        }
-        return rawTraces
-    }
-
-    /*
-    {
-      traceID: '1259126-37',
-      p: 'CdpEngine',
-      s: 'DebitExchangeRate',
-      k: '0x5301bf5ff0298f5c7b93a446709f8e8812d36c1058eccc97dcabba867eab6dc7c483de2de1246ea70002',
-      v: '0x406716b2b8070367010000000000000000',
-      pkExtra: '[{"Token":"DOT"}]',
-      pv: '101052848337458791'
-    }
-    */
-    async processTraceFromAuto(blockTS, blockNumber, blockHash, chainID, autoTraces, traceType, api, finalized = false, isTip = false) {
-        // setParserContext
-        this.chainParser.setParserContext(blockTS, blockNumber, blockHash, chainID)
-
-        let dedupEvents = {};
-        let finalStates = {};
-        if (!autoTraces || (!Array.isArray(autoTraces))) {
-            console.log("processTraceFromAuto not ", autoTraces);
-            return;
-        }
-        // (s) dedup the events
-        let extrinsicIndex = null;
-        for (const a of autoTraces) {
-            let o = {}
-            o.bn = blockNumber;
-            o.blockHash = blockHash;
-            o.ts = blockTS;
-            o.s = a.s
-            o.p = a.p
-            o.k = a.k;
-            o.v = a.v;
-            o.pv = a.pv;
-            o.pkExtra = (a.pkExtra != undefined) ? a.pkExtra : null;
-            o.traceID = a.traceID
-            //dedupEvents[a.k] = o;
-            if ((o.p == "Substrate" && o.s == "ExtrinsicIndex")) {
-                if (extrinsicIndex == null) {
-                    extrinsicIndex = 0
-                } else if (o.pv == "0") {
-                    extrinsicIndex = null
-                } else {
-                    extrinsicIndex++
-                }
-            }
-            o.extrinsic_id = `${blockNumber}-${extrinsicIndex}`
-            if (o.extrinsic_id.includes("null")) o.extrinsic_id = null
-            let fullStoragekey = a.k
-            if (dedupEvents[fullStoragekey] == undefined) {
-                dedupEvents[fullStoragekey] = []
-            }
-            dedupEvents[fullStoragekey].push(o) // all traces with the same key
-            finalStates[fullStoragekey] = a.traceID
-        }
-
-        let relayChain = paraTool.getRelayChainByChainID(chainID);
-        let paraID = paraTool.getParaIDfromChainID(chainID);
-        let id = this.getIDByChainID(chainID);
-        let chainName = this.getChainName(chainID);
-        let traces = [];
-        let balanceupdates = [];
-        let assetupdates = [];
-        let idx = 0;
-
-        for (const fullStoragekey of Object.keys(dedupEvents)) {
-            let aa = dedupEvents[fullStoragekey]; // all traces with the same key
-            for (const a of aa) {
-                let traceID = a.traceID
-                let isFinalState = (traceID == finalStates[fullStoragekey])
-                let extrinsic_id = a.extrinsic_id
-                //console.log(`k=${fullStoragekey}(${a.s}:${a.p}). traceID=${traceID}, extrinsic_id=${extrinsic_id}, isFinalState=${isFinalState}, finalized=${finalized}`)
-                let [a2, _] = this.parse_trace_from_auto(a, traceType, blockNumber, blockHash, api);
-                if (!a2) continue;
-                let p = a2.p;
-                let s = a2.s;
-                let pallet_section = `${p}:${s}`
-                if (finalized) {
-                    let c = null
-                    if (a2.asset) {
-                        let prinfo = await this.computePriceUSD({
-                            val: a2.free,
-                            asset: a2.asset,
-                            chainID: this.chainID,
-                            ts: null
-                        })
-                        if (prinfo) {
-                            let assetInfo = prinfo.assetInfo;
-                            c = {
-                                relay_chain: relayChain,
-                                para_id: paraID,
-                                id: assetInfo.id,
-                                chain_name: assetInfo.chainName,
-                                block_number: blockNumber,
-                                ts: blockTS,
-                                asset: a2.asset,
-                                xcm_interior_key: assetInfo.xcmInteriorKey,
-                                decimals: assetInfo.decimals,
-                                symbol: assetInfo.symbol,
-                                asset_name: assetInfo.assetName,
-                                asset_type: assetInfo.assetType,
-                                price_usd: assetInfo.priceUSD
-                            }
-                            let flds = []
-                            try {
-                                if (s == "TotalIssuance" && a2.totalIssuance) {
-                                    flds.push(["totalIssuance", "total_issuance"])
-                                } else {
-                                    if (a2.free) {
-                                        flds.push(["free", "free"])
-                                    }
-                                    if (a2.reserved) {
-                                        flds.push(["reserved", "reserved"])
-                                    }
-                                    if (a2.frozen) {
-                                        flds.push(["frozen", "frozen"])
-                                    }
-                                    if (a2.miscFrozen) {
-                                        flds.push(["miscFrozen", "misc_frozen"])
-                                    }
-                                    if (a2.feeFrozen) {
-                                        flds.push(["feeFrozen", "fee_frozen"])
-                                    }
-                                }
-                                for (const fmap of flds) {
-                                    let f = fmap[0] // e.g. totalIssuance
-                                    let f2 = fmap[1] // e.g. total_issuance
-                                    c[f2] = a2[f] / 10 ** c.decimals;
-                                    c[`${f2}_raw`] = a2[f].toString();
-                                    c[`${f2}_usd`] = c[f2] * c.price_usd;
-                                }
-                                //only update account balance / asset issuance with final states
-                                if (isFinalState && (p == "Tokens" || p == "System" || p == "Balances" || p == "Assets") && (s == "Account" || s == "Accounts" || s == "TotalIssuance")) {
-                                    if (a2.accountID) {
-                                        c.address_ss58 = a2.accountID;
-                                        c.address_pubkey = paraTool.getPubKey(a2.accountID);
-                                        balanceupdates.push({
-                                            insertId: `${relayChain}-${paraID}-${blockNumber}-${idx}`,
-                                            json: c
-                                        });
-                                        //console.log("BALANCEUPDATE", c);
-                                    } else if (a2.totalIssuance) {
-                                        assetupdates.push({
-                                            insertId: `${relayChain}-${paraID}-${blockNumber}-${idx}`,
-                                            json: c
-                                        });
-                                        //console.log("CASSETUPDATE", c);
-                                    }
-                                }
-                            } catch (err) {
-                                console.log(' BROKE', err);
-                            }
-                        }
-                    }
-                    if (this.suppress_trace(id, a2.p, a2.s)) {
-
-                    } else {
-                        let t = {
-                            relay_chain: relayChain,
-                            para_id: paraID,
-                            id: id,
-                            chain_name: chainName,
-                            block_number: blockNumber,
-                            block_hash: blockHash,
-                            ts: blockTS,
-                            trace_id: traceID,
-                            extrinsic_id: extrinsic_id,
-                            k: a2.k,
-                            v: a2.v,
-                            section: a2.p,
-                            storage: a2.s
-                        };
-                        if (a2.pk_extra) t.pk_extra = a2.pk_extra;
-                        if (a2.pv) t.pv = a2.pv;
-                        if (a2.accountID) {
-                            t.address_ss58 = a2.accountID;
-                            t.address_pubkey = paraTool.getPubKey(a2.accountID);
-                        }
-                        if (a2.asset) {
-                            t.asset = a2.asset;
-                        }
-                        if (c) {
-                            for (const f of Object.keys(c)) {
-                                if (t[f] == undefined) {
-                                    t[f] = c[f];
-                                }
-                            }
-                        }
-                        //Check?
-                        if (chainID == paraTool.chainIDPolkadot || chainID == paraTool.chainIDKusama) {
-                            traces.push({
-                                insertId: `${relayChain}-${paraID}-${blockNumber}-${traceID}`,
-                                json: t
-                            });
-                        }
-                    }
-                }
-                //temp local list blacklist for easier debugging
-                if (pallet_section == '...') {
-                    continue
-                }
-                //console.log(`processTrace ${pallet_section}`, a2)
-                if (a2.mpType && a2.mpIsSet) {
-                    await this.chainParser.processMP(this, p, s, a2, finalized)
-                } else if (a2.mpIsEmpty) {
-                    // we can safely skip the empty mp here - so that it doens't count towards not handled
-                } else if (a2.accountID && a2.asset) {
-                    let chainID = this.chainID
-                    let rAssetkey = a2.asset
-                    let fromAddress = paraTool.getPubKey(a2.accountID)
-                    await this.chainParser.processAccountAsset(this, p, s, a2, rAssetkey, fromAddress)
-                } else if (a2.asset) {
-                    await this.chainParser.processAsset(this, p, s, a2)
-                } else if (a2.lptokenID) {
-                    // decorate here
-                    a2.asset = a2.lptokenID
-                    await this.chainParser.processAsset(this, p, s, a2)
-                } else {
-                    if (this.unhandledTraceMap[pallet_section] == undefined) {
-                        //console.log(`(not handled) ${pallet_section}`);
-                        if (this.debugLevel >= paraTool.debugTracing) console.log(`(not handled) ${pallet_section}`, JSON.stringify(a2));
-                        this.unhandledTraceMap[pallet_section] = 0;
-                    }
-                    this.unhandledTraceMap[pallet_section]++
-                }
-                idx++;
-            }
-        }
-
-        if (this.BQ_SUBSTRATEETL_KEY && ((balanceupdates.length > 0) || (assetupdates.length > 0) || (traces.length > 0)) && isTip) {
-            const bigquery = this.get_big_query();
-            let tables = ["traces"];
-            for (const t of tables) {
-                let rows = null;
-                switch (t) {
-                    case "balanceupdates":
-                        //rows = balanceupdates;
-                        break;
-                    case "assetupdates":
-                        //  rows = assetupdates;
-                        break;
-                    case "traces":
-                        rows = traces;
-                        break;
-                    case "transfer":
-                        //rows = tokentransfer;
-                        break;
-                }
-                if (rows && rows.length > 0) {
-                    try {
-                        await bigquery
-                            .dataset(`crypto_${relayChain}`)
-                            .table(`${t}${paraID}`)
-                            .insert(rows, {
-                                raw: true
-                            });
-                        console.log("WRITE", relayChain, t, rows.length)
-                    } catch (err) {
-                        console.log(t, JSON.stringify(err));
-                    }
-                }
-            }
-        }
-    }
-
     currentHour() {
         let today = new Date();
         return today.getUTCHours();
@@ -7277,28 +6672,23 @@ module.exports = class Indexer extends AssetManager {
         return logDTKey
     }
 
-    async decodeRawBlock(r) {
+    //Rerview this closely
+    async decodeRawBlock(r, api) {
+        if (api == null) {
+            console.log("MISSING API");
+            process.exit(0);
+        }
         let blk = {
             block: r.block,
             justifications: null
         }
-        if (this.apiAt == undefined || this.apiAt.registry == undefined) {
-            this.logger.error({
-                "op": "decodeRawBlock",
-                "msg": "no apiAt"
-            })
-            process.exit(1);
-        }
         var signedBlock2;
         try {
-            signedBlock2 = this.apiAt.registry.createType('SignedBlock', blk);
+            signedBlock2 = api.registry.createType('SignedBlock', blk);
         } catch (e) {
             // try fallback here
             console.log(`failed with specV=${this.specVersion} [${r.block.number} ${r.block.hash}]`)
-            //let chain = await this.setupChainAndAPI(this.chainID); //not sure
-            //await this.initApiAtStorageKeys(chain, r.block.hash, r.block.number)
-            //signedBlock2 = this.api.registry.createType('SignedBlock', blk);
-            signedBlock2 = await this.api.rpc.chain.getBlock(r.hash);
+            signedBlock2 = await api.rpc.chain.getBlock(r.hash);
         }
         // signedBlock2.block.extrinsics.forEach((ex, index) => {  console.log(index, ex.hash.toHex());    });
         return signedBlock2
@@ -7329,7 +6719,7 @@ module.exports = class Indexer extends AssetManager {
         } else if (this.chainID == paraTool.chainIDAstar || this.chainID == paraTool.chainIDShiden || this.chainID == paraTool.chainIDShibuya ||
             this.chainID == paraTool.chainIDMoonbeam || this.chainID == paraTool.chainIDMoonriver || this.chainID == paraTool.chainIDMoonbaseAlpha || this.chainID == paraTool.chainIDMoonbaseBeta ||
             this.chainID == paraTool.chainIDHeiko || this.chainID == paraTool.chainIDParallel ||
-            this.chainID == paraTool.chainIDStatemine || this.chainID == paraTool.chainIDStatemint ||
+            this.chainID == paraTool.chainIDKusamaAssetHub || this.chainID == paraTool.chainIDPolkadotAssetHub ||
             this.chainID == paraTool.chainIDPhala || this.chainID == paraTool.chainIDKhala ||
             this.chainID == paraTool.chainIDHydraDX || this.chainID == paraTool.chainIDBasilisk ||
             this.chainID == paraTool.chainIDCalamari ||
@@ -7422,12 +6812,9 @@ module.exports = class Indexer extends AssetManager {
         > This implies that we MUST do 1a, 1b in seqence UNLESS to push all the flushes to step 2
         */
         //console.log('index_chain_block_row', JSON.stringify(r))
-
-        let autoTraces = false
         let blkNum = false
         let blkHash = false
         let blockAvailable = false
-        let traceAvailable = false
         let eventAvailable = false
         let blk = r.block
         if (r.block) {
@@ -7435,66 +6822,29 @@ module.exports = class Indexer extends AssetManager {
             blkNum = blk.header.number;
             blkHash = blk.hash;
         }
-        if (r.trace) traceAvailable = true
         if (r.events) eventAvailable = true
 
         //console.log(`[${blkNum}] [${blkHash}] Trace?${traceAvailable}, Events?${eventAvailable} , currTS=${this.getCurrentTS()}`)
-        if (blockAvailable && traceAvailable) {
-            // setup ParserContext here
-
-            let blockNumber = blk.header.number;
-            let blockHash = blk.hash;
-            let blockTS = blk.blockTS;
-            let processTraceStartTS = new Date().getTime()
-            if (r.blockHash == undefined || r.blockHash.length != 66) {
-                this.logger.error({
-                    "op": "index_chain_block_row",
-                    "bn": `${this.chainID}-${blockNumber}`,
-                    "msg": 'missing blockHash - check source',
-                })
-            } else {
-                let forceParseTrace = false;
-                let traceType = this.compute_trace_type(r.trace, r.traceType);
-                let api = (refreshAPI) ? await this.api.at(blockHash) : this.apiAt;
-                if (blockTS >= traceParseTS) {
-                    if (r.autotrace === false || r.autotrace == undefined || (r.autotrace && Array.isArray(r.autotrace) && r.autotrace.length == 0) || forceParseTrace) {
-                        if (this.debugLevel >= paraTool.debugInfo) console.log(`[${blockNumber}] [${blockHash}] autotrace generation`);
-                        autoTraces = await this.processTraceAsAuto(blockTS, blockNumber, blockHash, this.chainID, r.trace, traceType, api, isFinalized);
-                        //console.log(`[${blockNumber}] [${blockHash}] processTraceAsAuto generation`, isFinalized);
-                    } else {
-                        // if (this.debugLevel >= paraTool.debugTracing) SKIP PROCESSING since we covered autotrace generation already
-                        //console.log(`[${blockNumber}] [${blockHash}] processTraceAsAuto already covered len=${r.autotrace.length}`, isFinalized);
-                        autoTraces = r.autotrace;
-                    }
-                    await this.processTraceFromAuto(blockTS, blockNumber, blockHash, this.chainID, autoTraces, traceType, api, isFinalized, isTip); // use result from rawtrace to decorate
-                }
-                let processTraceTS = (new Date().getTime() - processTraceStartTS) / 1000
-                //console.log(`index_chain_block_row: processTrace`, processTraceTS);
-                this.timeStat.processTraceTS += processTraceTS
-                this.timeStat.processTrace++
-            }
-        }
-
         if (blockAvailable && eventAvailable) {
             let decodeRawBlockStartTS = new Date().getTime()
+            let api = (refreshAPI) ? await this.api.at(blkHash) : this.apiAt;
+            this.apiAt = api;
+            let decodeRawBlockTS = (new Date().getTime() - decodeRawBlockStartTS) / 1000
             if (!signedBlock) {
                 let decodeRawBlockSignedBlockStartTS = new Date().getTime()
-                signedBlock = await this.decodeRawBlock(r)
+                signedBlock = await this.decodeRawBlock(r, api)
                 let decodeRawBlockSignedBlockTS = (new Date().getTime() - decodeRawBlockSignedBlockStartTS) / 1000
                 this.timeStat.decodeRawBlockSignedBlockTS += decodeRawBlockSignedBlockTS
                 this.timeStat.decodeRawBlockSignedBlock++
             }
             r.block.extrinsics = signedBlock.block.extrinsics
-            let decodeRawBlockTS = (new Date().getTime() - decodeRawBlockStartTS) / 1000
             this.timeStat.decodeRawBlockTS += decodeRawBlockTS
             this.timeStat.decodeRawBlock++
 
             let processBlockEventsStartTS = new Date().getTime()
-
-            let tracesPresent = (r.trace) ? true : false;
             let isFinalized = true
 
-            let [blockStats, xcmMeta] = await this.processBlockEvents(this.chainID, r.block, r.events, null, null, null, autoTraces, isFinalized, false, isTip, tracesPresent);
+            let [blockStats, xcmMeta] = await this.processBlockEvents(this.chainID, r.block, r.events, null, null, null, api, isFinalized, false, isTip);
             r.blockStats = blockStats
             r.xcmMeta = xcmMeta
 
@@ -7507,7 +6857,7 @@ module.exports = class Indexer extends AssetManager {
 
 
     synthetic_blockTS(chainID, blockNumber) {
-        if (chainID == paraTool.chainIDStatemine || chainID == paraTool.chainIDStatemint || chainID == paraTool.chainIDShiden) {
+        if (chainID == paraTool.chainIDKusamaAssetHub || chainID == paraTool.chainIDPolkadotAssetHub || chainID == paraTool.chainIDShiden) {
             return 1577836800; // placeholder
         }
         if (chainID == 2058 && blockNumber < 78173) {
@@ -7663,17 +7013,20 @@ module.exports = class Indexer extends AssetManager {
         }
         try {
             this.apiAt = await this.api.at(blockHash)
+
             var runtimeVersion = await this.api.rpc.state.getRuntimeVersion(blockHash)
             this.specVersion = runtimeVersion.toJSON().specVersion;
 
             await this.getSpecVersionMetadata(chain, this.specVersion, blockHash, bn);
-            if (this.debugLevel >= paraTool.debugInfo) console.log("--- ADJUSTED API AT ", blockHash, this.specVersion)
+            //if (this.debugLevel >= paraTool.debugInfo)
+            console.log("--- ADJUSTED API AT ", blockHash, this.specVersion)
         } catch (err) {
             this.apiAt = await this.api;
             var runtimeVersion = await this.api.rpc.state.getRuntimeVersion();
             this.specVersion = runtimeVersion.toJSON().specVersion;
             await this.getSpecVersionMetadata(chain, this.specVersion, false, bn);
-            if (this.debugLevel >= paraTool.debugInfo) console.log("!!! ADJUSTED API AT ", blockHash, this.specVersion)
+            //if (this.debugLevel >= paraTool.debugInfo)
+            console.log("!!! ADJUSTED API AT ", blockHash, this.specVersion)
         }
 
         return this.specVersion
@@ -7714,6 +7067,19 @@ module.exports = class Indexer extends AssetManager {
         if (totalBlkCnt % jmp != 0) totalBatch++
 
         let refreshAPI = false;
+        let startSV = this.getSpecVersionAtBlockNumber(chain, currPeriod.startBN);
+        let endSV = this.getSpecVersionAtBlockNumber(chain, currPeriod.endBN);
+
+        if (startSV) await this.initApiAtStorageKeys(chain, startSV.blockHash, startSV.blockNumber);
+        if (endSV) await this.initApiAtStorageKeys(chain, endSV.blockHash, endSV.blockNumber);
+        if (startSV && startSV.specVersion != endSV.SpecVersion) {
+            refreshAPI = true; // Note: you could also set this flag more aggressively: on runtime upgrades, not just specVersion changes
+        }
+        if (this.apiAt == undefined) {
+            console.log("NO API AT");
+            this.apiAt = this.api
+        }
+
 
         for (let bn = currPeriod.startBN; bn <= currPeriod.endBN; bn += jmp) {
             batchN++
@@ -7733,6 +7099,11 @@ module.exports = class Indexer extends AssetManager {
                 start,
                 end,
                 cellLimit: 1,
+                filter: [{
+                    column: {
+                        cellLimit: 1
+                    }
+                }],
                 family: families
             });
             let getRowsTS = (new Date().getTime() - startTS) / 1000;
@@ -7741,55 +7112,11 @@ module.exports = class Indexer extends AssetManager {
             this.timeStat.getRows++
 
             startTS = new Date().getTime();
-            let startSpecVersion, endSpecVersion, endSpecVersionStartBN = null,
-                endSpecVersionStartBlockHash = null;
-            if (specVersion == false) {
-                for (let j = 0; j < rows.length; j++) {
-                    let row = rows[j];
-                    let rowData = row.data;
-                    if (rowData["finalized"]) {
-                        this.timeStat.getRuntimeVersion++
-                        let blockHashes = Object.keys(rowData["finalized"])
-                        console.log(`bn=${bn}, blockHashes=${blockHashes}`)
-                        for (const blockHash of Object.keys(blockHashes)) {
-                            let _specVersion = await this.initApiAtStorageKeys(chain, blockHash, bn);
-                            if (_specVersion != undefined) {
-                                startSpecVersion = _specVersion;
-                                endSpecVersion = _specVersion;
-                                j = rows.length;
-                                break;
-                            }
-                        }
-                    }
-                }
-                let endSV = this.getSpecVersionAtBlockNumber(chain, currPeriod.endBN);
-                if (endSV != null) {
-                    endSpecVersion = endSV.specVersion;
-                    endSpecVersionStartBN = endSV.blockNumber;
-                    endSpecVersionStartBlockHash = endSV.blockHash;
-                    if (startSpecVersion != endSpecVersion) {
-                        refreshAPI = true; // Note: you could also set this flag more aggressively: on runtime upgrades, not just specVersion changes
-                    }
-                }
-                if (refreshAPI) console.log("**** REFRESHAPI", startSpecVersion, endSpecVersion, currPeriod.endBN, refreshAPI);
-                if (this.apiAt == undefined) {
-                    this.logger.error({
-                        "op": "index_blocks_period",
-                        "msg": "no apiAt",
-                        chainID,
-                        logDT,
-                        hr
-                    })
-                    console.log("NO API AT");
-                    this.apiAt = this.api
-                }
-            }
             let getRuntimeVersionTS = (new Date().getTime() - startTS) / 1000
             if (getRuntimeVersionTS > 1) console.log("index_blocks_period: getRuntimeVersion", getRuntimeVersionTS);
             this.timeStat.getRuntimeVersionTS += getRuntimeVersionTS
 
             startTS = new Date().getTime();
-
             let statRows = [];
             for (let i = 0; i < rows.length; i++) {
                 try {
@@ -7880,12 +7207,12 @@ module.exports = class Indexer extends AssetManager {
         let xcmReadyForIndexing = (this.isRelayChain && indexed) ? 1 : 0;
 
         let elapsedSeconds = (new Date().getTime() - indexStartTS) / 1000
-        let indexlogvals = ["logDT", "hr", "indexDT", "elapsedSeconds", "indexed", "readyForIndexing", "specVersion", "bqExists", "numIndexingErrors", "numIndexingWarns", "xcmIndexed", "xcmReadyForIndexing", "lastAttemptEndDT", "lastAttemptHostname"];
+        let indexlogvals = ["logDT", "hr", "indexDT", "elapsedSeconds", "indexed", "readyForIndexing", "specVersion", "bqExists", "numIndexingErrors", "numIndexingWarns", "duneStatus", "duneAttemptStartDT", "duneAttempts", "lastAttemptEndDT", "lastAttemptHostname"];
         await this.upsertSQL({
             "table": "indexlog",
             "keys": ["chainID", "indexTS"],
             "vals": indexlogvals,
-            "data": [`('${chainID}', '${indexTS}', '${logDT}', '${hr}', Now(), '${elapsedSeconds}', '${indexed}', 1, '${this.specVersion}', 1, '${numIndexingErrors}', '${numIndexingWarns}', 0, '${xcmReadyForIndexing}', Now(), '${this.hostname}')`],
+            "data": [`('${chainID}', '${indexTS}', '${logDT}', '${hr}', Now(), '${elapsedSeconds}', '${indexed}', 1, '${this.specVersion}', 1, '${numIndexingErrors}', '${numIndexingWarns}', 'Ready', NULL, 0, Now(), '${this.hostname}')`],
             "replace": indexlogvals
         });
 
@@ -7910,6 +7237,7 @@ module.exports = class Indexer extends AssetManager {
         this.resetTimeUsage()
         return elapsedSeconds
     }
+
 
 
     resetHashRowStat() {

@@ -1,18 +1,18 @@
-// Copyright 2022 Colorful Notion, Inc.
-// This file is part of Polkaholic.
+// Copyright 2022-2025 Colorful Notion, Inc.
+// This file is part of polkadot-etl.
 
-// Polkaholic is free software: you can redistribute it and/or modify
+// polkadot-etl is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Polkaholic is distributed in the hope that it will be useful,
+// polkadot-etl is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Polkaholic.  If not, see <http://www.gnu.org/licenses/>.
+// along with polkadot-etl.  If not, see <http://www.gnu.org/licenses/>.
 
 const AssetManager = require("./assetManager");
 const paraTool = require("./paraTool");
@@ -21,6 +21,9 @@ const ethTool = require("./ethTool");
 const mysql = require("mysql2");
 const uiTool = require('./uiTool')
 const assetAndPriceFeedTTL = 300; // how long the data stays cached
+const {
+    AML
+} = require('elliptic-sdk');
 
 
 module.exports = class Query extends AssetManager {
@@ -164,6 +167,45 @@ module.exports = class Query extends AssetManager {
         return sig;
     }
 
+    async getAssethubPools(assets) {
+        let sql = `select * from assethubpools` // TODO: filter by assets
+
+        try {
+            let pools = await this.poolREADONLY.query(sql);
+            return pools
+        } catch (err) {
+            console.log(err);
+            return [];
+        }
+    }
+
+    async getAssethubLog(asset, against, timeframe) {
+        let w = ''
+        switch (timeframe) {
+            case 'day':
+                w = ` and indexTS > UNIX_TIMESTAMP(Now()) - 3600*48`;
+                break;
+            case 'week':
+                w = ` and indexTS > UNIX_TIMESTAMP(Now()) - 86400*8`;
+                break;
+            case 'month':
+                w = ` and indexTS > UNIX_TIMESTAMP(Now()) - 86400*31`;
+                break;
+            case 'all':
+                w = ` and indexTS > UNIX_TIMESTAMP(Now()) - 86400*365`;
+                break;
+        }
+        try {
+            let sql = `select * from assethublog where asset = ${mysql.escape(asset)} ${w}` // filter by timeframe
+            console.log(sql)
+            let log = await this.poolREADONLY.query(sql);
+            return log;
+        } catch (err) {
+            console.log(err);
+            return [];
+        }
+    }
+
     async sendResetPasswordLink(toMail) {
         // include nodemailer
         const nodemailer = require('nodemailer');
@@ -228,40 +270,19 @@ module.exports = class Query extends AssetManager {
         }
     }
 
-    async followUser(rawFromAddress, rawToAddress) {
+    // create table dedsnapshot ( address_ss58 varchar(67), address_pubkey varchar(67), free varchar(64), locked varchar(64), reserved varchar(64), total varchar(64), primary key (address_ss58) )
+    async getDEDSnapshot(accountID) {
         try {
-            let fromAddress = paraTool.getPubKey(rawFromAddress)
-            let toAddress = paraTool.getPubKey(rawToAddress)
-            // check that we aren't following the user already
-            // TODO: validate fromAddress + toAddress
-            let sql0 = `select isFollowing from follow where fromAddress = '${fromAddress}' and toAddress = '${toAddress}'`
-            let isFollowing = await this.poolREADONLY.query(sql0)
-            if (isFollowing.length == 0) {
-                var sql = `insert into follow ( fromAddress, toAddress, isFollowing, followDT ) values (${mysql.escape(fromAddress)}, ${mysql.escape(toAddress)}, 1, Now() )`
-                var sql2 = `insert into account ( address, numFollowing ) values (${mysql.escape(fromAddress)}, 1 ) on duplicate key update numFollowing = numFollowing + 1`
-                var sql3 = `insert into account ( address, numFollowers ) values (${mysql.escape(toAddress)}, 1 ) on duplicate key update numFollowers = numFollowers + 1`
-                this.batchedSQL.push(sql);
-                this.batchedSQL.push(sql2);
-                this.batchedSQL.push(sql3);
-                await this.update_batchedSQL();
-                return ({
-                    success: true
-                });
-            } else {
-                return ({
-                    error: "already following"
-                });
+            let sql0 = `select address_ss58, address_pubkey, total from dedsnapshot where address_ss58 = ${mysql.escape(accountID)} or address_pubkey = ${mysql.escape(accountID)} limit 1`
+            console.log(sql0);
+            let recs = await this.poolREADONLY.query(sql0)
+            if (recs.length > 0) {
+                return recs[0];
             }
+            return (null);
         } catch (e) {
-            this.logger.error({
-                "op": "query.followUser",
-                rawFromAddress,
-                rawToAddress,
-                e
-            });
-            return ({
-                error: "Could not follow user"
-            });
+            console.log(e);
+            return (null);
         }
     }
 
@@ -375,6 +396,119 @@ module.exports = class Query extends AssetManager {
             return [];
         }
         return [];
+    }
+
+
+    async getCountryCode(ip) {
+        const maxmind = require('maxmind');
+        const dbPath = "/root/go/src/github.com/colorfulnotion/polkaholic-pro/substrate/GeoLite2-Country.mmdb";
+        try {
+            const lookup = await maxmind.open(dbPath);
+            const geoData = lookup.get(ip);
+            if (geoData && geoData.country && geoData.country.iso_code === 'US') {
+                return (geoData.country.iso_code);
+            }
+        } catch (error) {
+            console.log(error);
+        }
+        return "UN";
+    }
+
+    async storeAMLCheck(address, appkey, ip) {
+        try {
+            let countryCode = await this.getCountryCode(ip);
+            var sql = `insert into amlcheck ( address, appkey, countryCode, ip, firstCheckDT, lastCheckDT ) values (${mysql.escape(address)}, ${mysql.escape(appkey)}, ${mysql.escape(countryCode)}, ${mysql.escape(ip)}, Now(), Now() ) on duplicate key update lastCheckDT = values(lastCheckDT), countryCode = values(countryCode), ip = values(ip)`
+            this.batchedSQL.push(sql);
+            await this.update_batchedSQL();
+            return {
+                ok: true
+            };
+        } catch (err) {
+            return {
+                ok: true,
+                err
+            };
+        }
+        let valid = false;
+        try {
+            if (address.length == 66) {
+                let pubkey = address;
+                address = this.getSS58ByChainID(pubkey)
+            } else {
+                let pubkey = paraTool.getPubKey(address);
+                if (pubkey === false) {
+                    return {
+                        ok: false
+                    };
+                }
+            }
+            valid = true;
+        } catch (error) {
+            return {
+                ok: false
+            };
+        }
+        let risk_score = null;
+
+        try {
+            const requestBody = {
+                subject: {
+                    asset: 'holistic',
+                    blockchain: 'holistic',
+                    type: 'address',
+                    hash: address
+                },
+                type: 'wallet_exposure',
+                customer_reference: `dotswap`
+            };
+            const {
+                client
+            } = new AML({
+                key: "898e8e5e5c94671f05cff4a4379f38a4",
+                secret: "79192527758b87f458f614c310e3650c"
+            });
+            const response = await client.post('/v2/wallet/synchronous', requestBody);
+
+            if (response.data.risk_score) {
+                risk_score = response.data.risk_score;
+            }
+            var sql = `insert into amlcheck ( address, appkey, ip, numchecks, amlcheck, risk_score, firstCheckDT, lastCheckDT ) values (${mysql.escape(address)}, ${mysql.escape(appkey)}, ${mysql.escape(ip)}, 1, ${mysql.escape(JSON.stringify(response.data))}, ${mysql.escape(risk_score)}, Now(), Now() ) on duplicate key update numchecks = numchecks + values(numchecks), lastCheckDT = values(lastCheckDT)`
+            this.batchedSQL.push(sql);
+            await this.update_batchedSQL();
+            if (risk_score > 0) {
+                return ({
+                    ok: false,
+                    risk_score,
+                    description: response.data
+                });
+            } else {
+                return ({
+                    ok: true,
+                    risk_score,
+                    description: response.data
+                });
+            }
+        } catch (e) {
+            if (e.response.status === 404) {
+                var sql = `insert into amlcheck ( address, appkey, ip, numchecks, amlcheck, risk_score, firstCheckDT, lastCheckDT ) values (${mysql.escape(address)}, ${mysql.escape(appkey)}, ${mysql.escape(ip)}, 1, ${mysql.escape(JSON.stringify({"err":404}))}, ${mysql.escape(risk_score)}, Now(), Now() ) on duplicate key update numchecks = numchecks + values(numchecks), lastCheckDT = values(lastCheckDT)`
+                this.batchedSQL.push(sql);
+                await this.update_batchedSQL();
+                return ({
+                    ok: true,
+                    risk_score,
+                    description: "404-not found"
+                });
+            } else {
+                var sql = `insert into amlcheck ( address, appkey, ip, numchecks, amlcheck, risk_score, firstCheckDT, lastCheckDT ) values (${mysql.escape(address)}, ${mysql.escape(appkey)}, ${mysql.escape(ip)}, 1, ${mysql.escape(JSON.stringify({"err":e}))}, ${mysql.escape(risk_score)}, Now(), Now() ) on duplicate key update numchecks = numchecks + values(numchecks), lastCheckDT = values(lastCheckDT)`
+                this.batchedSQL.push(sql);
+                await this.update_batchedSQL();
+                return ({
+                    ok: false,
+                    risk_score: null,
+                    description: e
+                });
+            }
+        }
     }
 
     async registerUser(email, password) {
@@ -6646,6 +6780,19 @@ module.exports = class Query extends AssetManager {
 
         // Use the custom sorting function to sort the array
         return arr.sort(compareStrings);
+    }
+
+    async getSnapshotBlocks(chainID, opt) {
+        try {
+            let logDT = opt.logDT
+            let startHR = opt.startHR
+            let finalHR = opt.finalHR
+            let period = await this.getSnapshotBN(chainID, logDT, startHR, finalHR)
+            return period
+        } catch (e) {
+            console.log(e)
+            return false
+        }
     }
 
     async getWASMContract(address, chainIDorChainName = null) {

@@ -1,7 +1,0 @@
-<% if ( assetInfo.isXCAsset ) { %>
-  <a href="/symbol/<%= assetInfo.symbol %>"><%= assetInfo.symbol %></a>
-<% } else if ( assetInfo.assetType == "ERC20" ) { %>
-  <a href="/token/<%= assetInfo.asset %>/<%= assetInfo.chainID %>"><%= assetInfo.symbol %></a>
-<% } else { %>
-  <a href="/asset/<%= assetInfo.asset %>/<%= assetInfo.chainID %>"><%= assetInfo.symbol %></a>
-<% } %>

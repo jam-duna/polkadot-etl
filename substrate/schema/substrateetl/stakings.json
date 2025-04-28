@@ -21,6 +21,11 @@
   },
   {
     "mode": "NULLABLE",
+    "name": "track",
+    "type": "STRING"
+  },
+  {
+    "mode": "NULLABLE",
     "name": "block_number",
     "type": "INTEGER"
   },

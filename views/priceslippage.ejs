@@ -1,9 +1,0 @@
-<% if ( price > 0 ) { %>
-<%= uiTool.currencyFormat(price); %>&nbsp;($<%= converting %>)
-<%
-let slippage = (price / orig) -1;
-%>
-<%- uiTool.presentPercentage(slippage) %>
-<br/>
-<% } %>
-

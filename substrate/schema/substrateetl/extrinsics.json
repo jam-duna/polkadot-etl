@@ -79,6 +79,12 @@
   },
   {
     "mode": "NULLABLE",
+    "description": "Execution Status of the Extrinsic (true as success; false as failure)",
+    "name": "status",
+    "type": "BOOLEAN"
+  },
+  {
+    "mode": "NULLABLE",
     "name": "signer_ss58",
     "type": "STRING",
     "description": "SS58 Address of Signer of extrinsic, if signed"

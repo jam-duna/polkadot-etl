@@ -1,40 +1,13 @@
-# Polkaholic.io
+# polkadot-etl
 
-Polkaholic.io indexes Polkadot, Kusama and their Substrate based parachains, and exposes a
-multi-chain block explorer at https://polkaholic.io powered by APIs https://api.polkaholic.io.
+polkadot-etl indexes Polkadot, Kusama and their Substrate based parachains for BigQuery and Dune ingestion.
 
-The Polkaholic index is fully available in BigQuery via [substrate-etl](https://github.com/colorfulnotion/substrate-etl)
-and covers 70 chains:
-* [Polkadot](https://github.com/colorfulnotion/substrate-etl/tree/main/polkadot)
-* [Kusama](https://github.com/colorfulnotion/substrate-etl/tree/main/kusama)
-* [Summary](https://github.com/colorfulnotion/substrate-etl/blob/main/SUMMARY.md)
+The index is fully available in BigQuery in the crypto-polkadot dataset.
 
-## Running the Polkaholic.io Indexer + Block explorer
 
-Assuming the indexer has been set up (see "Set up Indexing"), to run the polkaholic.io Block explorer:
-```
-# node index.js
-```
-By default, the configs use https://api.polkaholic.io.  
-To use your local index, set `POLKAHOLIC_API_URL` in your environment
+The index is stored in mysql + BigTable, and is set up with:
 
-```
-# node api.js
-```
-
-The `substrate-etl` is the recommended route for large scale access to the Polkaholic Index.
-
-## Set up Indexing
-
-A following 3 commands compose the Polkaholic Indexer: (documented [here](https://github.com/colorfulnotion/polkaholic/tree/main/substrate)
-
-* `polkaholic` - indexes individual Substrate chains
-* `xcmindexer` - indexes XCM activity between chains, and imports [XCM Global Asset Registry](https://github.com/colorfulnotion/xcm-global-registry) data
-* `substrate-etl` - exports Polkaholic data to public [substrate-etl](https://github.com/colorfulnotion/substrate-etl) dataset
-
-The polkaholic index is stored in mysql BigTable, and is set up with:
-
-* mysql (5.7): substrate/schema/polkaholic.sql
+* mysql (5.7): substrate/schema/polkadotetl.sql
 * BigTable: substrate/cbt/cbt.sh
 
 The `PolkaholicDB` class manages the connections to the above tables with a `POLKAHOLIC_DB` variable (see
@@ -299,14 +272,11 @@ At present, we manually:
 
 ### Google Cloud Deployment
 
-At present, 70 chains are crawled/indexed by 20 nodes (4 core, 16GB), where each of the 20 nodes are running 8-10 services on average (running `crawlblocks` and `indexchain`) _and_ one of the top 20 chains.  
+At present, 50 chains are crawled/indexed by a 10 GKE cluster (6 core, 16GB).  
+
 Ansible is used with auto generated YAML (see `yaml`) with `generateCrawlerYAML` and deployment is managed with `Makefile`:
 * `make indexers` - updates 20 indexers
 * `make ui` - updates US/AS/EU endpoints powering https://polkaholic.io 
-
-The current size of the index (as of February 19, 2022) is:
-* mysql - 171GB (master only, not including 3 replicas)
-* BigTable - 7.8TB (US based)
 
 Other:
 * Mysql Backup is automated on mysql via GCP Cloud SQL
@@ -324,4 +294,4 @@ Other:
 
 ## License
 
-Polkaholic is [GPL 3.0 licensed](LICENSE).
+polkadot-etl is [GPL 3.0 licensed](LICENSE).
